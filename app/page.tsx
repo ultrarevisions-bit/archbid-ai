@@ -6,7 +6,10 @@ export default function Home() {
       <nav className="home-nav">
         <div className="container nav-inner">
           <Link className="brand" href="/"><span className="brand-mark">A</span> ArchBid <span className="brand-ai">AI</span></Link>
-          <Link className="nav-cta" href="/dashboard">Try the RFP Analyzer →</Link>
+          <div className="nav-actions">
+            <Link className="nav-login" href="/login">Sign in</Link>
+            <Link className="nav-cta" href="/signup">Get started free →</Link>
+          </div>
         </div>
       </nav>
 
@@ -15,7 +18,7 @@ export default function Home() {
         <h1>Know which RFPs to pursue <span>before</span> you spend days responding.</h1>
         <p className="hero-copy">Upload an architecture RFP or tender and ArchBid AI extracts the requirements, identifies risks, and gives your firm a clear opportunity score.</p>
         <div className="hero-actions">
-          <Link className="primary-button" href="/dashboard">Analyze an RFP for free →</Link>
+          <Link className="primary-button" href="/signup">Analyze an RFP for free →</Link>
           <a className="secondary-button" href="#how-it-works">See how it works</a>
         </div>
         <p className="no-card">No credit card required · Built for architecture &amp; design firms</p>
