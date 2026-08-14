@@ -1,0 +1,1 @@
+Public RFP analyzer route. Users upload first, then create an account before the document is stored and analyzed.
