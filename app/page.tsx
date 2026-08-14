@@ -1,0 +1,51 @@
+import Link from "next/link";
+
+export default function Home() {
+  return (
+    <main className="home">
+      <nav className="home-nav">
+        <div className="container nav-inner">
+          <Link className="brand" href="/"><span className="brand-mark">A</span> ArchBid <span className="brand-ai">AI</span></Link>
+          <Link className="nav-cta" href="/dashboard">Try the RFP Analyzer →</Link>
+        </div>
+      </nav>
+
+      <section className="hero container">
+        <div className="eyebrow">AI BID INTELLIGENCE FOR ARCHITECTURE FIRMS</div>
+        <h1>Know which RFPs to pursue <span>before</span> you spend days responding.</h1>
+        <p className="hero-copy">Upload an architecture RFP or tender and ArchBid AI extracts the requirements, identifies risks, and gives your firm a clear opportunity score.</p>
+        <div className="hero-actions">
+          <Link className="primary-button" href="/dashboard">Analyze an RFP for free →</Link>
+          <a className="secondary-button" href="#how-it-works">See how it works</a>
+        </div>
+        <p className="no-card">No credit card required · Built for architecture &amp; design firms</p>
+      </section>
+
+      <section className="proof container">
+        <div><strong>01</strong><span>Upload your RFP</span></div>
+        <div><strong>02</strong><span>Get an opportunity score</span></div>
+        <div><strong>03</strong><span>See requirements &amp; risks</span></div>
+        <div><strong>04</strong><span>Prepare your response</span></div>
+      </section>
+
+      <section id="how-it-works" className="how container">
+        <div className="section-label">HOW IT WORKS</div>
+        <h2>Turn a long RFP into a clear decision.</h2>
+        <div className="cards">
+          <article><span>01</span><h3>Analyze</h3><p>Extract deadlines, scope, eligibility, evaluation criteria, submission rules and required documents.</p></article>
+          <article><span>02</span><h3>Score</h3><p>See a practical Go / No-Go opportunity score with the strongest reasons for and against pursuing the bid.</p></article>
+          <article><span>03</span><h3>Respond</h3><p>Use the analysis and compliance checklist as the foundation for a stronger, faster proposal response.</p></article>
+        </div>
+      </section>
+
+      <section className="score-section">
+        <div className="container score-grid">
+          <div><div className="section-label">OPPORTUNITY INTELLIGENCE</div><h2>Don't just write the proposal. Decide if it's worth writing.</h2><p>ArchBid is designed around the decision architecture firms make before committing valuable staff time to a pursuit.</p></div>
+          <div className="score-card"><div className="score-top"><span>OPPORTUNITY SCORE</span><strong>86<span>/100</span></strong></div><div className="score-status">● STRONG OPPORTUNITY</div><ul><li>✓ Required services match your firm</li><li>✓ Relevant project experience identified</li><li>✓ Submission requirements extracted</li><li>⚠ 2 potential compliance risks</li></ul></div>
+        </div>
+      </section>
+
+      <footer><div className="container"><span>© 2026 ArchBid AI</span><span>AI bid intelligence for architecture firms.</span></div></footer>
+    </main>
+  );
+}
