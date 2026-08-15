@@ -1,7 +1,8 @@
-import OpenAI, { toFile } from "openai";
+import OpenAI from "openai";
 import { NextResponse } from "next/server";
 import { createClient as createSupabaseServerClient } from "@/lib/supabase/server";
 import mammoth from "mammoth";
+import pdf from "pdf-parse";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
@@ -48,7 +49,7 @@ const analysisSchema = {
 };
 
 const systemPrompt = `You are ArchBid AI, an RFP intelligence analyst for architecture and design firms.
-Analyze the attached procurement/RFP document carefully. Do not invent facts. If a field is not stated, return "Not stated".
+Analyze the supplied procurement/RFP document carefully. Do not invent facts. If a field is not stated, return "Not stated".
 
 Produce a PRELIMINARY opportunity score from 0-100 based only on evidence in the RFP and the practical attractiveness of pursuing it. Consider:
 - eligibility and mandatory qualifications
@@ -59,7 +60,7 @@ Produce a PRELIMINARY opportunity score from 0-100 based only on evidence in the
 - evaluation criteria and competitive requirements
 - risks, exclusions, certifications, licensing, local experience, and other barriers
 
-Do not claim that the score is a personalized firm-fit score because the firm's detailed portfolio/profile is not yet available. Use the firm's name only for context.
+Do not claim that the score is a personalized firm-fit score because the firm's detailed portfolio/profile is not yet available.
 
 Recommendation rules:
 PURSUE = strong opportunity with manageable barriers.
@@ -75,6 +76,31 @@ const jsonFormat = {
   strict: true,
   schema: analysisSchema
 };
+
+function buildDocumentText(fileName: string, fileType: string | null, buffer: Buffer) {
+  const isPdf = (fileType || "").toLowerCase().includes("pdf") || fileName.toLowerCase().endsWith(".pdf");
+
+  if (isPdf) {
+    return pdf(buffer).then(parsed => {
+      const text = parsed.text.trim();
+      if (!text) throw new Error("This PDF does not contain readable text. A scanned/image-only PDF needs OCR, which we will add in a later version.");
+      // Keep both the beginning and end of unusually large RFPs so deadlines and submission instructions are less likely to be lost.
+      if (text.length > 300000) {
+        return `${text.slice(0, 220000)}\n\n[Middle of very large document omitted for this analysis pass.]\n\n${text.slice(-80000)}`;
+      }
+      return text;
+    });
+  }
+
+  return mammoth.extractRawText({ buffer }).then(extracted => {
+    const text = extracted.value.trim();
+    if (!text) throw new Error("We could not extract readable text from this DOC/DOCX file.");
+    if (text.length > 300000) {
+      return `${text.slice(0, 220000)}\n\n[Middle of very large document omitted for this analysis pass.]\n\n${text.slice(-80000)}`;
+    }
+    return text;
+  });
+}
 
 export async function POST(request: Request) {
   const supabase = await createSupabaseServerClient();
@@ -101,51 +127,24 @@ export async function POST(request: Request) {
   const apiKey = process.env.OPENAI_API_KEY;
   if (!apiKey) return NextResponse.json({ error: "ArchBid AI is not connected to its AI provider yet. Add OPENAI_API_KEY in Vercel Environment Variables." }, { status: 503 });
 
-  await supabase.from("rfps").update({ status: "analyzing" }).eq("id", rfp.id).eq("user_id", user.id);
+  await supabase.from("rfps").update({ status: "analyzing", updated_at: new Date().toISOString() }).eq("id", rfp.id).eq("user_id", user.id);
 
   try {
+    // Download from Supabase and extract text locally instead of uploading the PDF to OpenAI's Files API.
+    // This avoids the long provider-side PDF processing step that was causing the Vercel request to sit on "Analyzing".
     const { data: fileBlob, error: downloadError } = await supabase.storage.from("rfps").download(rfp.file_path);
     if (downloadError || !fileBlob) throw new Error("We could not retrieve the RFP from secure storage.");
 
-    const ai = new OpenAI({ apiKey });
-    let response;
+    const buffer = Buffer.from(await fileBlob.arrayBuffer());
+    const documentText = await buildDocumentText(rfp.file_name, rfp.file_type, buffer);
+    if (documentText.length < 50) throw new Error("The RFP text is too short to analyze.");
 
-    if ((rfp.file_type || "").toLowerCase().includes("pdf") || rfp.file_name.toLowerCase().endsWith(".pdf")) {
-      const uploaded = await ai.files.create({
-        file: await toFile(fileBlob, rfp.file_name, { type: "application/pdf" }),
-        purpose: "user_data"
-      });
-
-      try {
-        response = await ai.responses.create({
-          model: "gpt-5.6",
-          input: [
-            {
-              role: "user",
-              content: [
-                { type: "input_text", text: systemPrompt },
-                { type: "input_file", file_id: uploaded.id }
-              ]
-            }
-          ],
-          text: { format: jsonFormat }
-        });
-      } finally {
-        try { await ai.files.delete(uploaded.id); } catch { /* temporary provider copy can expire automatically */ }
-      }
-    } else {
-      const buffer = Buffer.from(await fileBlob.arrayBuffer());
-      const extracted = await mammoth.extractRawText({ buffer });
-      const text = extracted.value.trim();
-      if (!text) throw new Error("We could not extract readable text from this DOC/DOCX file.");
-      if (text.length > 120000) throw new Error("This DOC/DOCX file is too large to process in one analysis. Please use the PDF version of the RFP.");
-
-      response = await ai.responses.create({
-        model: "gpt-5.6",
-        input: `${systemPrompt}\n\nRFP DOCUMENT TEXT:\n${text}`,
-        text: { format: jsonFormat }
-      });
-    }
+    const ai = new OpenAI({ apiKey, timeout: 45000, maxRetries: 1 });
+    const response = await ai.responses.create({
+      model: "gpt-5.6",
+      input: `${systemPrompt}\n\nRFP DOCUMENT TEXT:\n${documentText}`,
+      text: { format: jsonFormat }
+    });
 
     if (!response.output_text) throw new Error("The AI returned an empty analysis.");
     const analysis = JSON.parse(response.output_text);
