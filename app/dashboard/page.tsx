@@ -12,6 +12,7 @@ type RfpRecord = {
   file_type: string | null;
   status: string | null;
   created_at?: string;
+  updated_at?: string;
 };
 
 export default function Dashboard() {
@@ -38,25 +39,36 @@ export default function Dashboard() {
       const { data: firm } = await supabase.from("firms").select("name").eq("owner_id", user.id).maybeSingle();
       if (firm?.name && firm.name !== "My Architecture Firm") setFirmName(firm.name);
 
-      // The database is the source of truth after an RFP has been saved.
-      // This means refreshes no longer make an uploaded/analyzing RFP disappear.
       const { data: latestRfp } = await supabase
         .from("rfps")
-        .select("id, file_name, file_path, file_type, status, created_at")
+        .select("id, file_name, file_path, file_type, status, created_at, updated_at")
         .eq("user_id", user.id)
         .order("created_at", { ascending: false })
         .limit(1)
         .maybeSingle();
 
       if (latestRfp) {
-        setRfp(latestRfp as RfpRecord);
+        const record = latestRfp as RfpRecord;
+        // A synchronous Vercel function cannot remain genuinely "analyzing" forever.
+        // If a record has been stuck for more than two minutes, the previous invocation
+        // almost certainly timed out. Mark it failed so the user can retry cleanly.
+        if (record.status === "analyzing" && record.updated_at) {
+          const ageMs = Date.now() - new Date(record.updated_at).getTime();
+          if (ageMs > 2 * 60 * 1000) {
+            await supabase.from("rfps").update({ status: "failed", updated_at: new Date().toISOString() }).eq("id", record.id).eq("user_id", user.id);
+            record.status = "failed";
+            record.updated_at = new Date().toISOString();
+          }
+        }
+
+        setRfp(record);
         setPendingUpload(false);
-        if (latestRfp.status === "analyzing") {
-          setStatus("ArchBid is analyzing this RFP. You can safely refresh this page; the saved document will remain here.");
-        } else if (latestRfp.status === "analyzed") {
+        if (record.status === "analyzing") {
+          setStatus("ArchBid is analyzing this RFP. Keep this page open; the analysis will normally finish within a minute.");
+        } else if (record.status === "analyzed") {
           setStatus("Analysis completed. Your result is saved to your workspace.");
-        } else if (latestRfp.status === "failed") {
-          setStatus("The previous analysis did not complete. Your RFP is still saved. You can try again.");
+        } else if (record.status === "failed") {
+          setStatus("The previous analysis did not complete. Your RFP is safely saved. Click Retry analysis to run it again.");
         } else {
           setStatus("Your RFP is saved and ready to analyze.");
         }
@@ -97,7 +109,7 @@ export default function Dashboard() {
     const { data: inserted, error: rfpError } = await supabase
       .from("rfps")
       .insert({ user_id: userId, file_name: file.name, file_path: path, file_type: file.type || "application/octet-stream", status: "uploaded" })
-      .select("id, file_name, file_path, file_type, status, created_at")
+      .select("id, file_name, file_path, file_type, status, created_at, updated_at")
       .single();
     if (rfpError || !inserted) throw rfpError || new Error("We could not create the RFP record.");
 
@@ -116,11 +128,13 @@ export default function Dashboard() {
       const { data: { user } } = await supabase.auth.getUser();
       if (!user) { window.location.href = "/login"; return; }
       const saved = await saveRfpIfNeeded(user.id);
-      setRfp({ ...saved, status: "analyzing" });
-      setStatus("Analyzing your RFP… ArchBid is reading the document and extracting the bid intelligence. This can take a few minutes for a long RFP.");
+      const analyzingRecord = { ...saved, status: "analyzing", updated_at: new Date().toISOString() };
+      setRfp(analyzingRecord);
+      setStatus("Analyzing your RFP… ArchBid is extracting the document text and evaluating the bid intelligence. Please keep this page open.");
 
       const controller = new AbortController();
-      const timeout = window.setTimeout(() => controller.abort(), 120000);
+      // Keep the browser timeout below Vercel's maximum function duration so the UI receives an error instead of hanging.
+      const timeout = window.setTimeout(() => controller.abort(), 55000);
       try {
         const response = await fetch("/api/analyze", {
           method: "POST",
@@ -130,7 +144,7 @@ export default function Dashboard() {
         });
         const result = await response.json().catch(() => ({}));
         if (!response.ok) throw new Error(result.error || "Analysis failed. Please try again.");
-        setRfp({ ...saved, status: "analyzed" });
+        setRfp({ ...saved, status: "analyzed", updated_at: new Date().toISOString() });
         setStatus("Analysis complete. Your RFP intelligence report has been saved.");
         window.location.href = `/results/${saved.id}`;
       } finally {
@@ -139,11 +153,11 @@ export default function Dashboard() {
     } catch (error) {
       console.error(error);
       if (error instanceof DOMException && error.name === "AbortError") {
-        setStatus("The analysis is taking longer than expected. Your RFP is saved. Refresh this page in a minute to check its status.");
+        setStatus("The analysis timed out before completing. Your RFP is saved. Click Retry analysis to try again.");
       } else {
         setStatus(error instanceof Error ? error.message : "We could not analyze your RFP. Your document is still saved.");
       }
-      setRfp(current => current ? { ...current, status: "failed" } : current);
+      setRfp(current => current ? { ...current, status: "failed", updated_at: new Date().toISOString() } : current);
     } finally {
       setBusy(false);
     }
@@ -156,6 +170,7 @@ export default function Dashboard() {
   const displayName = rfp?.file_name || file?.name || "Drop your RFP here";
   const fileSize = file ? `${(file.size / 1024 / 1024).toFixed(1)} MB` : "";
   const isAnalyzing = rfp?.status === "analyzing" || busy;
+  const hasSavedRfp = Boolean(rfp);
 
   return (
     <main className="dashboard">
@@ -179,11 +194,11 @@ export default function Dashboard() {
         </div>
 
         <button className="analyze-button" disabled={isAnalyzing || (!file && !rfp)} onClick={analyzeRfp}>
-          {isAnalyzing ? "Analyzing your RFP…" : rfp?.status === "failed" ? "Retry analysis →" : pendingUpload ? "Save & analyze RFP →" : rfp?.status === "analyzed" ? "Analyze another RFP →" : "Analyze RFP →"}
+          {isAnalyzing ? "Analyzing your RFP…" : rfp?.status === "failed" ? "Retry analysis →" : rfp?.status === "analyzed" ? "Analyze another RFP →" : pendingUpload ? "Save & analyze RFP →" : "Analyze RFP →"}
         </button>
 
         {status && <div className="status-message">{status}</div>}
-        <div className="demo-note"><strong>What you'll get:</strong> deadline · requirements · evaluation criteria · submission checklist · risks · opportunity score</div>
+        <div className="demo-note"><strong>What you'll get:</strong> opportunity score · go/no-go recommendation · deadline · requirements · evaluation criteria · submission checklist · risks</div>
       </section>
     </main>
   );
