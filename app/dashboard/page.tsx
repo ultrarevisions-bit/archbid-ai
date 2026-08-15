@@ -2,6 +2,7 @@
 
 import { ChangeEvent, DragEvent, useEffect, useRef, useState } from "react";
 import { createClient } from "@/lib/supabase/client";
+import { clearPendingFile, getPendingFile } from "@/lib/pending-file";
 import "./dashboard.css";
 
 export default function Dashboard() {
@@ -12,25 +13,28 @@ export default function Dashboard() {
   const [email, setEmail] = useState("");
   const [loadingUser, setLoadingUser] = useState(true);
   const [uploading, setUploading] = useState(false);
+  const [pendingUpload, setPendingUpload] = useState(false);
+  const [status, setStatus] = useState("");
   const supabase = createClient();
 
   useEffect(() => {
     async function loadProfile() {
       const { data: { user } } = await supabase.auth.getUser();
-      if (!user) {
-        window.location.href = "/signup";
-        return;
-      }
+      if (!user) { window.location.href = "/login"; return; }
       setEmail(user.email ?? "");
       const metadataFirm = user.user_metadata?.firm_name;
       if (metadataFirm) setFirmName(metadataFirm);
-
-      const { data: firm } = await supabase
-        .from("firms")
-        .select("name")
-        .eq("owner_id", user.id)
-        .maybeSingle();
+      const { data: firm } = await supabase.from("firms").select("name").eq("owner_id", user.id).maybeSingle();
       if (firm?.name && firm.name !== "My Architecture Firm") setFirmName(firm.name);
+
+      try {
+        const pending = await getPendingFile();
+        if (pending) {
+          setFile(pending);
+          setPendingUpload(true);
+          setStatus("Your uploaded RFP is still here. Click Analyze RFP to save it to your workspace.");
+        }
+      } catch (e) { console.error(e); }
       setLoadingUser(false);
     }
     loadProfile();
@@ -39,67 +43,37 @@ export default function Dashboard() {
   function chooseFile(selected: File | undefined) {
     if (!selected) return;
     const allowed = ["application/pdf", "application/vnd.openxmlformats-officedocument.wordprocessingml.document", "application/msword"];
-    if (!allowed.includes(selected.type) && !/\.(pdf|doc|docx)$/i.test(selected.name)) {
-      alert("Please upload a PDF, DOC, or DOCX file.");
-      return;
-    }
-    if (selected.size > 25 * 1024 * 1024) {
-      alert("Please upload a file smaller than 25MB.");
-      return;
-    }
-    setFile(selected);
+    if (!allowed.includes(selected.type) && !/\.(pdf|doc|docx)$/i.test(selected.name)) return setStatus("Please upload a PDF, DOC, or DOCX file.");
+    if (selected.size > 25 * 1024 * 1024) return setStatus("Please upload a file smaller than 25MB.");
+    setFile(selected); setPendingUpload(false); setStatus("");
   }
-
-  function onDrop(event: DragEvent<HTMLDivElement>) {
-    event.preventDefault();
-    setDragging(false);
-    chooseFile(event.dataTransfer.files?.[0]);
-  }
-
-  function onInput(event: ChangeEvent<HTMLInputElement>) {
-    chooseFile(event.target.files?.[0]);
-  }
+  function onDrop(event: DragEvent<HTMLDivElement>) { event.preventDefault(); setDragging(false); chooseFile(event.dataTransfer.files?.[0]); }
+  function onInput(event: ChangeEvent<HTMLInputElement>) { chooseFile(event.target.files?.[0]); }
 
   async function analyzeRfp() {
     if (!file || uploading) return;
-    setUploading(true);
+    setUploading(true); setStatus("Saving your RFP securely…");
     try {
       const { data: { user } } = await supabase.auth.getUser();
-      if (!user) {
-        window.location.href = "/signup";
-        return;
-      }
+      if (!user) { window.location.href = "/login"; return; }
       const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, "-");
       const path = `${user.id}/${crypto.randomUUID()}-${safeName}`;
       const { error: storageError } = await supabase.storage.from("rfps").upload(path, file, { upsert: false });
       if (storageError) throw storageError;
-
-      const { error: rfpError } = await supabase.from("rfps").insert({
-        user_id: user.id,
-        file_name: file.name,
-        file_path: path,
-        file_type: file.type || "application/octet-stream",
-        status: "uploaded",
-      });
+      const { error: rfpError } = await supabase.from("rfps").insert({ user_id: user.id, file_name: file.name, file_path: path, file_type: file.type || "application/octet-stream", status: "uploaded" });
       if (rfpError) throw rfpError;
-
-      alert("RFP uploaded successfully. AI analysis will be connected in the next build step.");
+      await clearPendingFile();
+      setPendingUpload(false);
+      setStatus("RFP saved successfully. AI analysis will be connected next.");
     } catch (error) {
       console.error(error);
-      alert(error instanceof Error ? error.message : "We could not upload your RFP. Please try again.");
-    } finally {
-      setUploading(false);
-    }
+      setStatus(error instanceof Error ? error.message : "We could not save your RFP. Please try again.");
+    } finally { setUploading(false); }
   }
 
-  async function signOut() {
-    await supabase.auth.signOut();
-    window.location.href = "/";
-  }
+  async function signOut() { await supabase.auth.signOut(); window.location.href = "/"; }
 
-  if (loadingUser) {
-    return <main className="dashboard loading-screen">Loading your ArchBid workspace…</main>;
-  }
+  if (loadingUser) return <main className="dashboard loading-screen">Loading your ArchBid workspace…</main>;
 
   return (
     <main className="dashboard">
@@ -112,20 +86,13 @@ export default function Dashboard() {
         </div>
       </nav>
       <section className="container dash-content">
-        <div className="welcome-row">
-          <div>
-            <div className="section-label">RFP ANALYZER</div>
-            <h1>Welcome, {firmName}</h1>
-            <p className="dash-copy">Upload an RFP or tender document. ArchBid will extract the information needed to decide whether your firm should pursue it.</p>
-          </div>
-        </div>
+        <div className="welcome-row"><div><div className="section-label">RFP ANALYZER</div><h1>Welcome, {firmName}</h1><p className="dash-copy">Upload an RFP or tender document. ArchBid will extract the information needed to decide whether your firm should pursue it.</p></div></div>
         <div className={`upload ${dragging ? "dragging" : ""}`} onDragOver={(e)=>{e.preventDefault();setDragging(true)}} onDragLeave={()=>setDragging(false)} onDrop={onDrop} onClick={()=>input.current?.click()}>
           <input ref={input} type="file" accept=".pdf,.doc,.docx" hidden onChange={onInput} />
-          <div className="upload-icon">↑</div>
-          <h2>{file ? file.name : "Drop your RFP here"}</h2>
-          <p>{file ? `${(file.size / 1024 / 1024).toFixed(1)} MB · Ready to analyze` : "or click to browse · PDF, DOCX up to 25MB"}</p>
+          <div className="upload-icon">↑</div><h2>{file ? file.name : "Drop your RFP here"}</h2><p>{file ? `${(file.size / 1024 / 1024).toFixed(1)} MB · ${pendingUpload ? "Waiting to be saved" : "Ready to analyze"}` : "or click to browse · PDF, DOCX up to 25MB"}</p>
         </div>
-        <button className="analyze-button" disabled={!file || uploading} onClick={analyzeRfp}>{uploading ? "Uploading…" : "Analyze RFP →"}</button>
+        <button className="analyze-button" disabled={!file || uploading} onClick={analyzeRfp}>{uploading ? "Saving…" : pendingUpload ? "Save RFP & continue →" : "Analyze RFP →"}</button>
+        {status && <div className="status-message">{status}</div>}
         <div className="demo-note"><strong>What you'll get:</strong> deadline · requirements · evaluation criteria · submission checklist · risks · opportunity score</div>
       </section>
     </main>
