@@ -1,4 +1,4 @@
-import { GoogleGenAI, createPartFromUri, createUserContent } from "@google/genai";
+import OpenAI, { toFile } from "openai";
 import { NextResponse } from "next/server";
 import { createClient as createSupabaseServerClient } from "@/lib/supabase/server";
 import mammoth from "mammoth";
@@ -9,7 +9,7 @@ export const maxDuration = 60;
 const analysisSchema = {
   type: "object",
   properties: {
-    opportunityScore: { type: "integer", minimum: 0, maximum: 100 },
+    opportunityScore: { type: "integer" },
     recommendation: { type: "string", enum: ["PURSUE", "CONSIDER", "DO NOT PURSUE"] },
     confidence: { type: "string", enum: ["HIGH", "MEDIUM", "LOW"] },
     projectName: { type: "string" },
@@ -31,7 +31,8 @@ const analysisSchema = {
           mandatory: { type: "boolean" },
           details: { type: "string" }
         },
-        required: ["item", "mandatory", "details"]
+        required: ["item", "mandatory", "details"],
+        additionalProperties: false
       }
     },
     evaluationCriteria: { type: "array", items: { type: "string" } },
@@ -42,7 +43,8 @@ const analysisSchema = {
     "location", "projectType", "deadline", "estimatedBudget", "executiveSummary",
     "strengths", "risks", "missingItems", "requirements", "evaluationCriteria",
     "submissionRequirements"
-  ]
+  ],
+  additionalProperties: false
 };
 
 const systemPrompt = `You are ArchBid AI, an RFP intelligence analyst for architecture and design firms.
@@ -66,6 +68,14 @@ DO NOT PURSUE = major eligibility, deadline, scope, effort, or risk issues make 
 
 Extract concrete requirements, evaluation criteria, submission requirements, deadlines, budget/fee information, risks, and missing items. Keep each list concise but useful to a busy architecture firm. Return valid JSON matching the supplied schema.`;
 
+const jsonFormat = {
+  type: "json_schema" as const,
+  name: "archbid_rfp_analysis",
+  description: "Structured preliminary RFP opportunity analysis for an architecture or design firm.",
+  strict: true,
+  schema: analysisSchema
+};
+
 export async function POST(request: Request) {
   const supabase = await createSupabaseServerClient();
   const { data: { user } } = await supabase.auth.getUser();
@@ -88,8 +98,8 @@ export async function POST(request: Request) {
   if (rfpError || !rfp) return NextResponse.json({ error: "RFP not found or you do not have access to it." }, { status: 404 });
   if (!rfp.file_path) return NextResponse.json({ error: "The RFP file is missing from storage." }, { status: 400 });
 
-  const apiKey = process.env.GEMINI_API_KEY;
-  if (!apiKey) return NextResponse.json({ error: "ArchBid AI is not connected to its AI provider yet. Add GEMINI_API_KEY in Vercel Environment Variables." }, { status: 503 });
+  const apiKey = process.env.OPENAI_API_KEY;
+  if (!apiKey) return NextResponse.json({ error: "ArchBid AI is not connected to its AI provider yet. Add OPENAI_API_KEY in Vercel Environment Variables." }, { status: 503 });
 
   await supabase.from("rfps").update({ status: "analyzing" }).eq("id", rfp.id).eq("user_id", user.id);
 
@@ -97,34 +107,32 @@ export async function POST(request: Request) {
     const { data: fileBlob, error: downloadError } = await supabase.storage.from("rfps").download(rfp.file_path);
     if (downloadError || !fileBlob) throw new Error("We could not retrieve the RFP from secure storage.");
 
-    const ai = new GoogleGenAI({ apiKey });
+    const ai = new OpenAI({ apiKey });
     let response;
 
     if ((rfp.file_type || "").toLowerCase().includes("pdf") || rfp.file_name.toLowerCase().endsWith(".pdf")) {
-      const geminiFile = await ai.files.upload({
-        file: fileBlob,
-        config: { mimeType: "application/pdf", displayName: rfp.file_name }
+      const uploaded = await ai.files.create({
+        file: await toFile(fileBlob, rfp.file_name, { type: "application/pdf" }),
+        purpose: "user_data"
       });
 
-      let processed = await ai.files.get({ name: geminiFile.name });
-      const started = Date.now();
-      while (processed.state === "PROCESSING" && Date.now() - started < 30000) {
-        await new Promise(resolve => setTimeout(resolve, 1500));
-        processed = await ai.files.get({ name: geminiFile.name });
+      try {
+        response = await ai.responses.create({
+          model: "gpt-5.6",
+          input: [
+            {
+              role: "user",
+              content: [
+                { type: "input_text", text: systemPrompt },
+                { type: "input_file", file_id: uploaded.id }
+              ]
+            }
+          ],
+          text: { format: jsonFormat }
+        });
+      } finally {
+        try { await ai.files.delete(uploaded.id); } catch { /* temporary provider copy can expire automatically */ }
       }
-      if (processed.state === "FAILED") throw new Error("Gemini could not process this PDF.");
-      if (processed.state === "PROCESSING") throw new Error("The document is taking too long to process. Please try the analysis again.");
-
-      response = await ai.models.generateContent({
-        model: "gemini-2.5-flash",
-        contents: createUserContent([
-          { text: systemPrompt },
-          createPartFromUri(geminiFile.uri!, geminiFile.mimeType || "application/pdf")
-        ]),
-        config: { responseMimeType: "application/json", responseSchema: analysisSchema }
-      });
-
-      try { await ai.files.delete({ name: geminiFile.name }); } catch { /* temporary Gemini files expire automatically */ }
     } else {
       const buffer = Buffer.from(await fileBlob.arrayBuffer());
       const extracted = await mammoth.extractRawText({ buffer });
@@ -132,15 +140,15 @@ export async function POST(request: Request) {
       if (!text) throw new Error("We could not extract readable text from this DOC/DOCX file.");
       if (text.length > 120000) throw new Error("This DOC/DOCX file is too large to process in one analysis. Please use the PDF version of the RFP.");
 
-      response = await ai.models.generateContent({
-        model: "gemini-2.5-flash",
-        contents: `${systemPrompt}\n\nRFP DOCUMENT TEXT:\n${text}`,
-        config: { responseMimeType: "application/json", responseSchema: analysisSchema }
+      response = await ai.responses.create({
+        model: "gpt-5.6",
+        input: `${systemPrompt}\n\nRFP DOCUMENT TEXT:\n${text}`,
+        text: { format: jsonFormat }
       });
     }
 
-    if (!response.text) throw new Error("The AI returned an empty analysis.");
-    const analysis = JSON.parse(response.text);
+    if (!response.output_text) throw new Error("The AI returned an empty analysis.");
+    const analysis = JSON.parse(response.output_text);
 
     const { data: savedAnalysis, error: analysisError } = await supabase
       .from("rfp_analyses")
