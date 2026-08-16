@@ -40,6 +40,14 @@ export default function Dashboard() {
     async function loadWorkspace() {
       try {
         const { data: { user }, error: authError } = await supabase.auth.getUser();
+
+        const { data: authTest, error: authTestError } =
+  await supabase.rpc("test_archbid_auth");
+
+console.log("ARCHBID AUTH TEST:", authTest);
+console.log("ARCHBID AUTH TEST ERROR:", authTestError);
+console.log("ARCHBID USER:", user);
+        
         if (authError) throw authError;
         if (!user) { window.location.href = "/login"; return; }
         setEmail(user.email ?? "");
