@@ -30,6 +30,8 @@ type AnalysisRecord = {
 };
 
 export default function Dashboard() {
+  console.log("🔥 ARCHBID NEW DASHBOARD CODE IS RUNNING 🔥");
+  
   const input = useRef<HTMLInputElement>(null);
 
   const [file, setFile] = useState<File | null>(null);
