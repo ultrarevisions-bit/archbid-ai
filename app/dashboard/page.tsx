@@ -1,6 +1,13 @@
 "use client";
 
-import { ChangeEvent, DragEvent, useEffect, useRef, useState } from "react";
+import {
+  ChangeEvent,
+  DragEvent,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
+
 import { createClient } from "@/lib/supabase/client";
 import { clearPendingFile, getPendingFile } from "@/lib/pending-file";
 import "./dashboard.css";
@@ -10,6 +17,7 @@ type RfpRecord = {
   file_name: string;
   file_path: string;
   file_type: string | null;
+  user_id: string;
   status: string | null;
   created_at?: string;
   updated_at?: string;
@@ -28,11 +36,14 @@ export default function Dashboard() {
   const [rfp, setRfp] = useState<RfpRecord | null>(null);
   const [recentRfPs, setRecentRfPs] = useState<RfpRecord[]>([]);
   const [dragging, setDragging] = useState(false);
+
   const [firmName, setFirmName] = useState("Your Architecture Firm");
   const [email, setEmail] = useState("");
+
   const [loadingUser, setLoadingUser] = useState(true);
   const [busy, setBusy] = useState(false);
   const [pendingUpload, setPendingUpload] = useState(false);
+
   const [status, setStatus] = useState("");
   const [loadError, setLoadError] = useState("");
 
@@ -41,46 +52,39 @@ export default function Dashboard() {
   useEffect(() => {
     async function loadWorkspace() {
       try {
-        console.log("========================================");
-        console.log("ARCHBID DASHBOARD: STARTING WORKSPACE LOAD");
-        console.log("========================================");
+        /*
+         * ---------------------------------------------------------
+         * 1. GET CURRENT AUTHENTICATED USER
+         * ---------------------------------------------------------
+         */
 
         const {
           data: { user },
           error: authError,
         } = await supabase.auth.getUser();
 
-        console.log("ARCHBID AUTH USER:", user);
-        console.log("ARCHBID AUTH USER ID:", user?.id);
-        console.log("ARCHBID AUTH EMAIL:", user?.email);
-        console.log("ARCHBID AUTH ERROR:", authError);
-
-        /*
-         * AUTH TEST
-         *
-         * This is only for debugging.
-         * It lets us confirm that Supabase sees the currently
-         * logged-in user correctly.
-         */
-        const {
-          data: authTest,
-          error: authTestError,
-        } = await supabase.rpc("test_archbid_auth");
-
-        console.log("ARCHBID AUTH TEST:", authTest);
-        console.log("ARCHBID AUTH TEST ERROR:", authTestError);
+        console.log("ARCHBID USER:", user);
+        console.log("ARCHBID USER ID:", user?.id);
+        console.log("ARCHBID USER EMAIL:", user?.email);
 
         if (authError) {
+          console.error("ARCHBID AUTH ERROR:", authError);
           throw authError;
         }
 
         if (!user) {
-          console.error("ARCHBID: NO AUTHENTICATED USER FOUND");
+          console.error("ARCHBID: NO AUTHENTICATED USER");
           window.location.href = "/login";
           return;
         }
 
         setEmail(user.email ?? "");
+
+        /*
+         * ---------------------------------------------------------
+         * 2. LOAD FIRM INFORMATION
+         * ---------------------------------------------------------
+         */
 
         const metadataFirm = user.user_metadata?.firm_name;
 
@@ -88,17 +92,11 @@ export default function Dashboard() {
           setFirmName(metadataFirm);
         }
 
-        /*
-         * LOAD FIRM
-         */
         const { data: firm, error: firmError } = await supabase
           .from("firms")
           .select("name")
           .eq("owner_id", user.id)
           .maybeSingle();
-
-        console.log("ARCHBID FIRM RESULT:", firm);
-        console.log("ARCHBID FIRM ERROR:", firmError);
 
         if (firmError) {
           console.warn("Firm lookup failed:", firmError.message);
@@ -109,60 +107,31 @@ export default function Dashboard() {
         }
 
         /*
-         * ======================================================
-         * LOAD SAVED RFPs
-         * ======================================================
+         * ---------------------------------------------------------
+         * 3. LOAD RFPs BELONGING TO THIS USER
          *
          * IMPORTANT:
-         * We are specifically checking the RFPs belonging to
-         * the currently authenticated Supabase user.
+         * We explicitly include user_id in the SELECT.
+         * This fixes the TypeScript build error.
+         * ---------------------------------------------------------
          */
 
-        console.log("========================================");
-        console.log("ARCHBID RFP DEBUG");
-        console.log("========================================");
-        console.log("ARCHBID: About to load RFPs");
-        console.log("ARCHBID: Current user ID:", user.id);
-        console.log("ARCHBID: Current user email:", user.email);
+        console.log("ARCHBID: Loading RFPs for user:", user.id);
 
-        const { data: savedRfps, error: rfpError } = await supabase
+        const {
+          data: savedRfps,
+          error: rfpError,
+        } = await supabase
           .from("rfps")
           .select(
-            "id, file_name, file_path, file_type, status, created_at, updated_at"
+            "id, file_name, file_path, file_type, user_id, status, created_at, updated_at"
           )
           .eq("user_id", user.id)
           .order("created_at", { ascending: false })
           .limit(10);
 
-        /*
-         * VERY IMPORTANT DEBUG OUTPUT
-         */
-        console.log("ARCHBID: RFP QUERY ERROR:", rfpError);
-        console.log("ARCHBID: RFP QUERY RESULT:", savedRfps);
-        console.log(
-          "ARCHBID: RFP COUNT:",
-          savedRfps?.length ?? 0
-        );
-
-        if (savedRfps && savedRfps.length > 0) {
-          console.log("ARCHBID: RFP FILES RETURNED:");
-
-          savedRfps.forEach((item, index) => {
-            console.log(`RFP ${index + 1}:`, {
-              id: item.id,
-              file_name: item.file_name,
-              user_id: item.user_id,
-              status: item.status,
-              created_at: item.created_at,
-            });
-          });
-        } else {
-          console.warn(
-            "ARCHBID: SUPABASE RETURNED ZERO RFPs FOR THIS USER."
-          );
-        }
-
-        console.log("========================================");
+        console.log("ARCHBID RFP QUERY RESULT:", savedRfps);
+        console.log("ARCHBID RFP QUERY ERROR:", rfpError);
 
         if (rfpError) {
           throw new Error(
@@ -172,18 +141,32 @@ export default function Dashboard() {
 
         const records = (savedRfps ?? []) as RfpRecord[];
 
-        console.log("ARCHBID: RFP RECORDS AFTER CAST:", records);
+        console.log("ARCHBID RFP COUNT:", records.length);
 
         /*
-         * ======================================================
-         * LOAD ANALYSES
-         * ======================================================
+         * ---------------------------------------------------------
+         * 4. CHECK EACH RFP'S USER ID
+         * ---------------------------------------------------------
          */
 
-        if (records.length) {
-          const ids = records.map((record) => record.id);
+        records.forEach((record) => {
+          console.log("ARCHBID RFP:", {
+            id: record.id,
+            file_name: record.file_name,
+            user_id: record.user_id,
+            current_user_id: user.id,
+            status: record.status,
+          });
+        });
 
-          console.log("ARCHBID: Looking for analyses for RFP IDs:", ids);
+        /*
+         * ---------------------------------------------------------
+         * 5. LOAD ANALYSIS IDs
+         * ---------------------------------------------------------
+         */
+
+        if (records.length > 0) {
+          const ids = records.map((record) => record.id);
 
           const {
             data: analyses,
@@ -193,15 +176,8 @@ export default function Dashboard() {
             .select("id, rfp_id")
             .in("rfp_id", ids);
 
-          console.log(
-            "ARCHBID: ANALYSIS QUERY RESULT:",
-            analyses
-          );
-
-          console.log(
-            "ARCHBID: ANALYSIS QUERY ERROR:",
-            analysisError
-          );
+          console.log("ARCHBID ANALYSES:", analyses);
+          console.log("ARCHBID ANALYSIS ERROR:", analysisError);
 
           if (analysisError) {
             console.warn(
@@ -211,11 +187,9 @@ export default function Dashboard() {
           } else {
             const analysisMap = new Map<string, string>();
 
-            ((analyses ?? []) as AnalysisRecord[]).forEach(
-              (item) => {
-                analysisMap.set(item.rfp_id, item.id);
-              }
-            );
+            ((analyses ?? []) as AnalysisRecord[]).forEach((item) => {
+              analysisMap.set(item.rfp_id, item.id);
+            });
 
             records.forEach((record) => {
               record.analysis_id =
@@ -229,9 +203,9 @@ export default function Dashboard() {
         }
 
         /*
-         * ======================================================
-         * HANDLE STUCK ANALYSES
-         * ======================================================
+         * ---------------------------------------------------------
+         * 6. HANDLE STUCK ANALYSES
+         * ---------------------------------------------------------
          */
 
         if (records.length) {
@@ -263,21 +237,19 @@ export default function Dashboard() {
           }
 
           /*
-           * ======================================================
-           * FINAL DASHBOARD RECORDS
-           * ======================================================
+           * -------------------------------------------------------
+           * 7. SHOW SAVED RFPs
+           * -------------------------------------------------------
            */
 
-          console.log("========================================");
-          console.log("ARCHBID FINAL DASHBOARD RFP RECORDS");
-          console.log("========================================");
-          console.log(records);
-          console.log("Total records:", records.length);
-          console.log("Latest record:", records[0]);
-          console.log("========================================");
-
           setRecentRfPs(records);
+
+          /*
+           * The newest RFP is displayed as the current RFP.
+           */
+
           setRfp(records[0]);
+
           setPendingUpload(false);
 
           const latest = records[0];
@@ -300,8 +272,16 @@ export default function Dashboard() {
             );
           }
         } else {
-          console.warn(
-            "ARCHBID: No saved RFPs found. Checking pending browser file..."
+          /*
+           * -------------------------------------------------------
+           * 8. NO SAVED RFPs
+           *
+           * Check for a pending browser upload.
+           * -------------------------------------------------------
+           */
+
+          console.log(
+            "ARCHBID: No saved RFPs found for this user."
           );
 
           try {
@@ -317,16 +297,13 @@ export default function Dashboard() {
             }
           } catch (e) {
             console.error(
-              "ARCHBID: Pending file lookup failed:",
+              "Pending file lookup failed:",
               e
             );
           }
         }
       } catch (error) {
-        console.error(
-          "ARCHBID DASHBOARD LOAD ERROR:",
-          error
-        );
+        console.error("Dashboard load error:", error);
 
         setLoadError(
           error instanceof Error
@@ -339,10 +316,6 @@ export default function Dashboard() {
         );
       } finally {
         setLoadingUser(false);
-
-        console.log(
-          "ARCHBID DASHBOARD: WORKSPACE LOAD FINISHED"
-        );
       }
     }
 
@@ -350,9 +323,9 @@ export default function Dashboard() {
   }, []);
 
   /*
-   * ============================================================
+   * -------------------------------------------------------------
    * FILE SELECTION
-   * ============================================================
+   * -------------------------------------------------------------
    */
 
   function chooseFile(selected: File | undefined) {
@@ -368,15 +341,17 @@ export default function Dashboard() {
       !allowed.includes(selected.type) &&
       !/\.(pdf|doc|docx)$/i.test(selected.name)
     ) {
-      return setStatus(
+      setStatus(
         "Please upload a PDF, DOC, or DOCX file."
       );
+      return;
     }
 
     if (selected.size > 25 * 1024 * 1024) {
-      return setStatus(
+      setStatus(
         "Please upload a file smaller than 25MB."
       );
+      return;
     }
 
     setFile(selected);
@@ -404,9 +379,9 @@ export default function Dashboard() {
   }
 
   /*
-   * ============================================================
+   * -------------------------------------------------------------
    * SAVE RFP
-   * ============================================================
+   * -------------------------------------------------------------
    */
 
   async function saveRfpIfNeeded(
@@ -429,29 +404,25 @@ export default function Dashboard() {
 
     const path = `${userId}/${crypto.randomUUID()}-${safeName}`;
 
-    console.log(
-      "ARCHBID: Uploading file to storage:",
-      path
-    );
+    /*
+     * Upload file to Supabase Storage.
+     */
 
     const {
       error: storageError,
     } = await supabase.storage
       .from("rfps")
-      .upload(
-        path,
-        file,
-        { upsert: false }
-      );
+      .upload(path, file, {
+        upsert: false,
+      });
 
     if (storageError) {
-      console.error(
-        "ARCHBID STORAGE ERROR:",
-        storageError
-      );
-
       throw storageError;
     }
+
+    /*
+     * Create database record.
+     */
 
     const {
       data: inserted,
@@ -468,19 +439,9 @@ export default function Dashboard() {
         status: "uploaded",
       })
       .select(
-        "id, file_name, file_path, file_type, status, created_at, updated_at"
+        "id, file_name, file_path, file_type, user_id, status, created_at, updated_at"
       )
       .single();
-
-    console.log(
-      "ARCHBID: INSERTED RFP:",
-      inserted
-    );
-
-    console.log(
-      "ARCHBID: INSERT RFP ERROR:",
-      rfpError
-    );
 
     if (rfpError || !inserted) {
       throw (
@@ -495,21 +456,23 @@ export default function Dashboard() {
 
     setFile(null);
     setPendingUpload(false);
+
     setRfp(inserted as RfpRecord);
 
     return inserted as RfpRecord;
   }
 
   /*
-   * ============================================================
+   * -------------------------------------------------------------
    * ANALYZE RFP
-   * ============================================================
+   * -------------------------------------------------------------
    */
 
   async function analyzeRfp() {
     if (busy) return;
 
     setBusy(true);
+
     setStatus(
       "Saving your RFP securely…"
     );
@@ -519,11 +482,6 @@ export default function Dashboard() {
         data: { user },
       } = await supabase.auth.getUser();
 
-      console.log(
-        "ARCHBID ANALYZE USER:",
-        user
-      );
-
       if (!user) {
         window.location.href = "/login";
         return;
@@ -532,7 +490,7 @@ export default function Dashboard() {
       const saved =
         await saveRfpIfNeeded(user.id);
 
-      const analyzingRecord = {
+      const analyzingRecord: RfpRecord = {
         ...saved,
         status: "analyzing",
         updated_at:
@@ -555,37 +513,25 @@ export default function Dashboard() {
         );
 
       try {
-        console.log(
-          "ARCHBID: Starting analysis for RFP:",
-          saved.id
+        const response = await fetch(
+          "/api/analyze",
+          {
+            method: "POST",
+            headers: {
+              "Content-Type":
+                "application/json",
+            },
+            body: JSON.stringify({
+              rfpId: saved.id,
+            }),
+            signal: controller.signal,
+          }
         );
-
-        const response =
-          await fetch(
-            "/api/analyze",
-            {
-              method: "POST",
-              headers: {
-                "Content-Type":
-                  "application/json",
-              },
-              body: JSON.stringify({
-                rfpId: saved.id,
-              }),
-              signal:
-                controller.signal,
-            }
-          );
 
         const result =
           await response
             .json()
             .catch(() => ({}));
-
-        console.log(
-          "ARCHBID ANALYSIS RESPONSE:",
-          result
-        );
 
         if (!response.ok) {
           throw new Error(
@@ -613,10 +559,7 @@ export default function Dashboard() {
         window.clearTimeout(timeout);
       }
     } catch (error) {
-      console.error(
-        "ARCHBID ANALYSIS ERROR:",
-        error
-      );
+      console.error(error);
 
       if (
         error instanceof DOMException &&
@@ -649,9 +592,9 @@ export default function Dashboard() {
   }
 
   /*
-   * ============================================================
+   * -------------------------------------------------------------
    * SIGN OUT
-   * ============================================================
+   * -------------------------------------------------------------
    */
 
   async function signOut() {
@@ -661,9 +604,9 @@ export default function Dashboard() {
   }
 
   /*
-   * ============================================================
+   * -------------------------------------------------------------
    * LOADING SCREEN
-   * ============================================================
+   * -------------------------------------------------------------
    */
 
   if (loadingUser) {
@@ -675,9 +618,9 @@ export default function Dashboard() {
   }
 
   /*
-   * ============================================================
-   * DISPLAY VARIABLES
-   * ============================================================
+   * -------------------------------------------------------------
+   * DISPLAY VALUES
+   * -------------------------------------------------------------
    */
 
   const displayName =
@@ -697,13 +640,10 @@ export default function Dashboard() {
     rfp?.status === "analyzing" ||
     busy;
 
-  const hasSavedRfp =
-    Boolean(rfp);
-
   /*
-   * ============================================================
+   * -------------------------------------------------------------
    * DASHBOARD UI
-   * ============================================================
+   * -------------------------------------------------------------
    */
 
   return (
@@ -715,7 +655,8 @@ export default function Dashboard() {
         >
           <span className="brand-mark">
             A
-          </span>{" "}
+          </span>
+
           ArchBid{" "}
           <span className="brand-ai">
             AI
@@ -771,9 +712,7 @@ export default function Dashboard() {
 
         <div
           className={`upload ${
-            dragging
-              ? "dragging"
-              : ""
+            dragging ? "dragging" : ""
           }`}
           onDragOver={(e) => {
             e.preventDefault();
@@ -836,7 +775,8 @@ export default function Dashboard() {
             ? "Analyzing your RFP…"
             : rfp?.analysis_id
             ? "View saved analysis →"
-            : rfp?.status === "failed"
+            : rfp?.status ===
+              "failed"
             ? "Retry analysis →"
             : pendingUpload
             ? "Save & analyze RFP →"
@@ -849,7 +789,7 @@ export default function Dashboard() {
               className="analyze-button"
               onClick={() => {
                 window.location.href =
-                  `/results/${rfp.analysis_id}`;
+                  `/results/${rfp.id}`;
               }}
             >
               Open RFP intelligence
@@ -890,8 +830,7 @@ export default function Dashboard() {
                   <div
                     key={item.id}
                     style={{
-                      display:
-                        "flex",
+                      display: "flex",
                       justifyContent:
                         "space-between",
                       gap: "12px",
@@ -902,12 +841,14 @@ export default function Dashboard() {
                     }}
                   >
                     <span>
-                      {item.file_name}
+                      {
+                        item.file_name
+                      }
                     </span>
 
                     {item.analysis_id ? (
                       <a
-                        href={`/results/${item.analysis_id}`}
+                        href={`/results/${item.id}`}
                       >
                         View report →
                       </a>
