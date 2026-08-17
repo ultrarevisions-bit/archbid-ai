@@ -294,6 +294,53 @@ export default function Dashboard() {
     return inserted as RfpRecord;
   }
 
+  async function waitForAnalysis(rfpId: string, saved: RfpRecord) {
+    const startedAt = Date.now();
+    const maxWait = 90 * 1000;
+
+    setStatus(
+      "The analysis is taking a little longer than expected. ArchBid is still finishing the review — you do not need to refresh the page."
+    );
+
+    while (Date.now() - startedAt < maxWait) {
+      try {
+        const { data: analysis, error: analysisError } = await supabase
+          .from("rfp_analyses")
+          .select("id")
+          .eq("rfp_id", rfpId)
+          .maybeSingle();
+
+        if (!analysisError && analysis?.id) {
+          setRfp({
+            ...saved,
+            status: "analyzed",
+            updated_at: new Date().toISOString(),
+            analysis_id: analysis.id,
+          });
+          setStatus("Analysis complete. Opening your RFP intelligence report…");
+          window.location.href = `/results/${analysis.id}`;
+          return true;
+        }
+
+        const { data: currentRfp } = await supabase
+          .from("rfps")
+          .select("status, updated_at")
+          .eq("id", rfpId)
+          .maybeSingle();
+
+        if (currentRfp?.status === "failed") {
+          return false;
+        }
+      } catch (pollError) {
+        console.warn("ArchBid analysis status check failed:", pollError);
+      }
+
+      await new Promise((resolve) => window.setTimeout(resolve, 3000));
+    }
+
+    return false;
+  }
+
   async function analyzeRfp() {
     if (busy) return;
     setBusy(true);
@@ -359,26 +406,44 @@ export default function Dashboard() {
       console.error(error);
 
       if (error instanceof DOMException && error.name === "AbortError") {
-        setStatus(
-          "The analysis timed out before completing. Your RFP is saved. Refresh the dashboard and retry."
-        );
+        const saved = rfp;
+        if (saved?.id) {
+          const completed = await waitForAnalysis(saved.id, saved);
+          if (completed) return;
+
+          setStatus(
+            "The analysis is taking longer than expected. Your RFP is saved and still safe. Please refresh the dashboard in a moment; if it remains stuck, use Retry analysis."
+          );
+          setRfp((current) =>
+            current
+              ? {
+                  ...current,
+                  status: "analyzing",
+                  updated_at: new Date().toISOString(),
+                }
+              : current
+          );
+          return;
+        }
+
+        setStatus("The analysis is taking longer than expected. Your RFP is saved. Please refresh in a moment.");
       } else {
         setStatus(
           error instanceof Error
             ? error.message
             : "We could not analyze your RFP. Your document is still saved."
         );
-      }
 
-      setRfp((current) =>
-        current
-          ? {
-              ...current,
-              status: "failed",
-              updated_at: new Date().toISOString(),
-            }
-          : current
-      );
+        setRfp((current) =>
+          current
+            ? {
+                ...current,
+                status: "failed",
+                updated_at: new Date().toISOString(),
+              }
+            : current
+        );
+      }
     } finally {
       setBusy(false);
     }
