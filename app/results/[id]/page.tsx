@@ -4,7 +4,6 @@ import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import { createClient } from "@/lib/supabase/client";
-import "./results.css";
 
 type Analysis = {
   id: string;
@@ -128,7 +127,6 @@ export default function ResultsPage() {
 
         foundAnalysis = byAnalysisId as Analysis | null;
 
-        // Older dashboard links may contain the RFP ID instead of the analysis ID.
         if (!foundAnalysis) {
           const { data: byRfpId, error: rfpIdError } = await supabase
             .from("rfp_analyses")
