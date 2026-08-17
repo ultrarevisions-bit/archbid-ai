@@ -294,53 +294,6 @@ export default function Dashboard() {
     return inserted as RfpRecord;
   }
 
-  async function waitForAnalysis(rfpId: string, saved: RfpRecord) {
-    const startedAt = Date.now();
-    const maxWait = 90 * 1000;
-
-    setStatus(
-      "The analysis is taking a little longer than expected. ArchBid is still finishing the review — you do not need to refresh the page."
-    );
-
-    while (Date.now() - startedAt < maxWait) {
-      try {
-        const { data: analysis, error: analysisError } = await supabase
-          .from("rfp_analyses")
-          .select("id")
-          .eq("rfp_id", rfpId)
-          .maybeSingle();
-
-        if (!analysisError && analysis?.id) {
-          setRfp({
-            ...saved,
-            status: "analyzed",
-            updated_at: new Date().toISOString(),
-            analysis_id: analysis.id,
-          });
-          setStatus("Analysis complete. Opening your RFP intelligence report…");
-          window.location.href = `/results/${analysis.id}`;
-          return true;
-        }
-
-        const { data: currentRfp } = await supabase
-          .from("rfps")
-          .select("status, updated_at")
-          .eq("id", rfpId)
-          .maybeSingle();
-
-        if (currentRfp?.status === "failed") {
-          return false;
-        }
-      } catch (pollError) {
-        console.warn("ArchBid analysis status check failed:", pollError);
-      }
-
-      await new Promise((resolve) => window.setTimeout(resolve, 3000));
-    }
-
-    return false;
-  }
-
   async function analyzeRfp() {
     if (busy) return;
     setBusy(true);
@@ -368,82 +321,55 @@ export default function Dashboard() {
         "Analyzing your RFP… ArchBid is extracting the document text and evaluating the bid intelligence. Please keep this page open."
       );
 
-      const controller = new AbortController();
-      const timeout = window.setTimeout(() => controller.abort(), 55000);
+      // Do not abort the request from the browser. The API route already has a
+      // 60-second Vercel execution window and the AI analysis can legitimately
+      // take longer than 55 seconds for large RFPs. The previous 55-second
+      // client abort caused the UI to report a timeout even though the server
+      // continued and successfully saved the analysis.
+      const response = await fetch("/api/analyze", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ rfpId: saved.id }),
+      });
 
-      try {
-        const response = await fetch("/api/analyze", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ rfpId: saved.id }),
-          signal: controller.signal,
-        });
+      const result = await response.json().catch(() => ({}));
 
-        const result = await response.json().catch(() => ({}));
-
-        if (!response.ok) {
-          throw new Error(result.error || "Analysis failed. Please try again.");
-        }
-
-        setRfp({
-          ...saved,
-          status: "analyzed",
-          updated_at: new Date().toISOString(),
-          analysis_id: result.analysisId,
-        });
-
-        setStatus("Analysis complete. Your RFP intelligence report has been saved.");
-
-        if (!result.analysisId) {
-          throw new Error("Analysis completed but no analysis ID was returned.");
-        }
-
-        window.location.href = `/results/${result.analysisId}`;
-      } finally {
-        window.clearTimeout(timeout);
+      if (!response.ok) {
+        throw new Error(result.error || "Analysis failed. Please try again.");
       }
+
+      setRfp({
+        ...saved,
+        status: "analyzed",
+        updated_at: new Date().toISOString(),
+        analysis_id: result.analysisId,
+      });
+
+      setStatus("Analysis complete. Your RFP intelligence report has been saved.");
+
+      if (!result.analysisId) {
+        throw new Error("Analysis completed but no analysis ID was returned.");
+      }
+
+      window.location.href = `/results/${result.analysisId}`;
     } catch (error) {
       console.error(error);
 
-      if (error instanceof DOMException && error.name === "AbortError") {
-        const saved = rfp;
-        if (saved?.id) {
-          const completed = await waitForAnalysis(saved.id, saved);
-          if (completed) return;
+      setStatus(
+        error instanceof Error
+          ? error.message
+          : "We could not analyze your RFP. Your document is still saved."
+      );
 
-          setStatus(
-            "The analysis is taking longer than expected. Your RFP is saved and still safe. Please refresh the dashboard in a moment; if it remains stuck, use Retry analysis."
-          );
-          setRfp((current) =>
-            current
-              ? {
-                  ...current,
-                  status: "analyzing",
-                  updated_at: new Date().toISOString(),
-                }
-              : current
-          );
-          return;
-        }
-
-        setStatus("The analysis is taking longer than expected. Your RFP is saved. Please refresh in a moment.");
-      } else {
-        setStatus(
-          error instanceof Error
-            ? error.message
-            : "We could not analyze your RFP. Your document is still saved."
-        );
-
-        setRfp((current) =>
-          current
-            ? {
-                ...current,
-                status: "failed",
-                updated_at: new Date().toISOString(),
-              }
-            : current
-        );
-      }
+      setRfp((current) =>
+        current
+          ? {
+              ...current,
+              status: "failed",
+              updated_at: new Date().toISOString(),
+            }
+          : current
+      );
     } finally {
       setBusy(false);
     }
