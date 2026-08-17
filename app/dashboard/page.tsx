@@ -1,13 +1,6 @@
 "use client";
 
-import {
-  ChangeEvent,
-  DragEvent,
-  useEffect,
-  useRef,
-  useState,
-} from "react";
-
+import { ChangeEvent, DragEvent, useEffect, useRef, useState } from "react";
 import { createClient } from "@/lib/supabase/client";
 import { clearPendingFile, getPendingFile } from "@/lib/pending-file";
 import "./dashboard.css";
@@ -24,10 +17,7 @@ type RfpRecord = {
   analysis_id?: string | null;
 };
 
-type AnalysisRecord = {
-  id: string;
-  rfp_id: string;
-};
+type AnalysisRecord = { id: string; rfp_id: string };
 
 export default function Dashboard() {
   console.log("🔥 ARCHBID NEW DASHBOARD CODE IS RUNNING 🔥");
@@ -50,37 +40,17 @@ export default function Dashboard() {
     async function loadWorkspace() {
       try {
         const { data: { user }, error: authError } = await supabase.auth.getUser();
-
-        console.log("ARCHBID USER:", user);
-        console.log("ARCHBID USER ID:", user?.id);
-        console.log("ARCHBID USER EMAIL:", user?.email);
-
-        if (authError) {
-          console.error("ARCHBID AUTH ERROR:", authError);
-          throw authError;
-        }
-
-        if (!user) {
-          console.error("ARCHBID: NO AUTHENTICATED USER");
-          window.location.href = "/login";
-          return;
-        }
+        if (authError) throw authError;
+        if (!user) { window.location.href = "/login"; return; }
 
         setEmail(user.email ?? "");
-
         const metadataFirm = user.user_metadata?.firm_name;
         if (metadataFirm) setFirmName(metadataFirm);
 
         const { data: firm, error: firmError } = await supabase
-          .from("firms")
-          .select("name")
-          .eq("owner_id", user.id)
-          .maybeSingle();
-
+          .from("firms").select("name").eq("owner_id", user.id).maybeSingle();
         if (firmError) console.warn("Firm lookup failed:", firmError.message);
         if (firm?.name && firm.name !== "My Architecture Firm") setFirmName(firm.name);
-
-        console.log("ARCHBID: Loading RFPs for user:", user.id);
 
         const { data: savedRfps, error: rfpError } = await supabase
           .from("rfps")
@@ -88,65 +58,21 @@ export default function Dashboard() {
           .eq("user_id", user.id)
           .order("created_at", { ascending: false })
           .limit(10);
-
-        console.log("ARCHBID RFP QUERY RESULT:", savedRfps);
-        console.log("ARCHBID RFP QUERY ERROR:", rfpError);
-
         if (rfpError) throw new Error(`Could not load saved RFPs: ${rfpError.message}`);
 
         const records = (savedRfps ?? []) as RfpRecord[];
-        console.log("ARCHBID RFP COUNT:", records.length);
-
-        records.forEach((record) => {
-          console.log("ARCHBID RFP:", {
-            id: record.id,
-            file_name: record.file_name,
-            user_id: record.user_id,
-            current_user_id: user.id,
-            status: record.status,
-          });
-        });
-
-        if (records.length > 0) {
-          const ids = records.map((record) => record.id);
-          const { data: analyses, error: analysisError } = await supabase
-            .from("rfp_analyses")
-            .select("id, rfp_id")
-            .in("rfp_id", ids);
-
-          console.log("ARCHBID ANALYSES:", analyses);
-          console.log("ARCHBID ANALYSIS ERROR:", analysisError);
-
-          if (analysisError) {
-            console.warn("Analysis lookup failed:", analysisError.message);
-          } else {
-            const analysisMap = new Map<string, string>();
-            ((analyses ?? []) as AnalysisRecord[]).forEach((item) => analysisMap.set(item.rfp_id, item.id));
-            records.forEach((record) => {
-              record.analysis_id = analysisMap.get(record.id) ?? null;
-              if (record.analysis_id) record.status = "analyzed";
-            });
-          }
-        }
-
         if (records.length) {
-          for (const record of records) {
-            if (record.status === "analyzing" && !record.analysis_id && record.updated_at) {
-              const ageMs = Date.now() - new Date(record.updated_at).getTime();
-
-              // Do not mark a legitimate long-running analysis as failed after two minutes.
-              // The analysis may still be running on the server and the result may already be
-              // saved shortly afterward. Give it a much longer recovery window.
-              if (ageMs > 10 * 60 * 1000) {
-                await supabase
-                  .from("rfps")
-                  .update({ status: "failed", updated_at: new Date().toISOString() })
-                  .eq("id", record.id)
-                  .eq("user_id", user.id);
-                record.status = "failed";
-                record.updated_at = new Date().toISOString();
-              }
-            }
+          const ids = records.map(r => r.id);
+          const { data: analyses, error: analysisError } = await supabase
+            .from("rfp_analyses").select("id, rfp_id").in("rfp_id", ids);
+          if (analysisError) console.warn("Analysis lookup failed:", analysisError.message);
+          else {
+            const map = new Map<string, string>();
+            ((analyses ?? []) as AnalysisRecord[]).forEach(a => map.set(a.rfp_id, a.id));
+            records.forEach(r => {
+              r.analysis_id = map.get(r.id) ?? null;
+              if (r.analysis_id) r.status = "analyzed";
+            });
           }
 
           setRecentRfPs(records);
@@ -157,14 +83,13 @@ export default function Dashboard() {
           if (latest.analysis_id) {
             setStatus("Your latest RFP analysis is saved. Open the report below or analyze another RFP.");
           } else if (latest.status === "analyzing") {
-            setStatus("ArchBid is still processing this RFP. You can keep this page open; the report will open automatically when the analysis is saved.");
+            setStatus("ArchBid is still processing this RFP. The report will open automatically when the analysis is saved.");
           } else if (latest.status === "failed") {
             setStatus("The previous analysis did not complete. Your RFP is safely saved. Click Retry analysis to run it again.");
           } else {
             setStatus("Your RFP is saved and ready to analyze.");
           }
         } else {
-          console.log("ARCHBID: No saved RFPs found for this user.");
           try {
             const pending = await getPendingFile();
             if (pending) {
@@ -172,9 +97,7 @@ export default function Dashboard() {
               setPendingUpload(true);
               setStatus("Your uploaded RFP is still here. Save it to your workspace to continue.");
             }
-          } catch (e) {
-            console.error("Pending file lookup failed:", e);
-          }
+          } catch (e) { console.error("Pending file lookup failed:", e); }
         }
       } catch (error) {
         console.error("Dashboard load error:", error);
@@ -184,29 +107,22 @@ export default function Dashboard() {
         setLoadingUser(false);
       }
     }
-
     loadWorkspace();
   }, []);
 
   function chooseFile(selected: File | undefined) {
     if (!selected) return;
-
     const allowed = [
       "application/pdf",
       "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
       "application/msword",
     ];
-
     if (!allowed.includes(selected.type) && !/\.(pdf|doc|docx)$/i.test(selected.name)) {
-      setStatus("Please upload a PDF, DOC, or DOCX file.");
-      return;
+      setStatus("Please upload a PDF, DOC, or DOCX file."); return;
     }
-
     if (selected.size > 25 * 1024 * 1024) {
-      setStatus("Please upload a file smaller than 25MB.");
-      return;
+      setStatus("Please upload a file smaller than 25MB."); return;
     }
-
     setFile(selected);
     setRfp(null);
     setPendingUpload(true);
@@ -214,14 +130,9 @@ export default function Dashboard() {
   }
 
   function onDrop(event: DragEvent<HTMLDivElement>) {
-    event.preventDefault();
-    setDragging(false);
-    chooseFile(event.dataTransfer.files?.[0]);
+    event.preventDefault(); setDragging(false); chooseFile(event.dataTransfer.files?.[0]);
   }
-
-  function onInput(event: ChangeEvent<HTMLInputElement>) {
-    chooseFile(event.target.files?.[0]);
-  }
+  function onInput(event: ChangeEvent<HTMLInputElement>) { chooseFile(event.target.files?.[0]); }
 
   async function saveRfpIfNeeded(userId: string): Promise<RfpRecord> {
     if (rfp && !file) return rfp;
@@ -229,65 +140,49 @@ export default function Dashboard() {
 
     const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, "-");
     const path = `${userId}/${crypto.randomUUID()}-${safeName}`;
-
     const { error: storageError } = await supabase.storage.from("rfps").upload(path, file, { upsert: false });
     if (storageError) throw storageError;
 
     const { data: inserted, error: rfpError } = await supabase
       .from("rfps")
-      .insert({
-        user_id: userId,
-        file_name: file.name,
-        file_path: path,
-        file_type: file.type || "application/octet-stream",
-        status: "uploaded",
-      })
+      .insert({ user_id: userId, file_name: file.name, file_path: path, file_type: file.type || "application/octet-stream", status: "uploaded" })
       .select("id, file_name, file_path, file_type, user_id, status, created_at, updated_at")
       .single();
-
     if (rfpError || !inserted) throw rfpError || new Error("We could not create the RFP record.");
 
     await clearPendingFile();
-    setFile(null);
-    setPendingUpload(false);
-    setRfp(inserted as RfpRecord);
+    setFile(null); setPendingUpload(false); setRfp(inserted as RfpRecord);
     return inserted as RfpRecord;
   }
 
-  async function waitForSavedAnalysis(rfpId: string, maxWaitMs = 10 * 60 * 1000): Promise<string | null> {
+  async function getAnalysisStatus(rfpId: string): Promise<{ analysisId: string | null; status: string | null }> {
+    const { data: analysis, error: analysisError } = await supabase
+      .from("rfp_analyses").select("id").eq("rfp_id", rfpId).maybeSingle();
+    if (!analysisError && analysis?.id) return { analysisId: analysis.id, status: "analyzed" };
+
+    const { data: currentRfp, error: rfpError } = await supabase
+      .from("rfps").select("status").eq("id", rfpId).maybeSingle();
+    if (!rfpError) return { analysisId: null, status: currentRfp?.status ?? null };
+    return { analysisId: null, status: null };
+  }
+
+  async function waitForSavedAnalysis(rfpId: string, maxWaitMs = 15 * 60 * 1000): Promise<string> {
     const startedAt = Date.now();
-    let attempts = 0;
+    let lastStatus = "analyzing";
 
     while (Date.now() - startedAt < maxWaitMs) {
-      attempts += 1;
-
-      const { data: analysis, error: analysisError } = await supabase
-        .from("rfp_analyses")
-        .select("id, rfp_id")
-        .eq("rfp_id", rfpId)
-        .maybeSingle();
-
-      if (!analysisError && analysis?.id) return analysis.id;
-
-      const { data: currentRfp, error: rfpError } = await supabase
-        .from("rfps")
-        .select("status")
-        .eq("id", rfpId)
-        .maybeSingle();
-
-      if (!rfpError && currentRfp?.status === "failed") {
-        throw new Error("The RFP analysis failed on the server. Please retry the analysis.");
+      const result = await getAnalysisStatus(rfpId);
+      if (result.analysisId) return result.analysisId;
+      if (result.status === "failed") {
+        throw new Error("The analysis failed on the server. Your RFP is safely saved. Please retry the analysis.");
       }
-
-      if (attempts % 4 === 0) {
-        const elapsedSeconds = Math.floor((Date.now() - startedAt) / 1000);
-        setStatus(`ArchBid is still analyzing your RFP… ${elapsedSeconds}s elapsed. Your document is safely saved. Please keep this page open.`);
-      }
-
-      await new Promise((resolve) => setTimeout(resolve, 3000));
+      lastStatus = result.status ?? lastStatus;
+      const elapsedSeconds = Math.floor((Date.now() - startedAt) / 1000);
+      setStatus(`ArchBid is still analyzing your RFP… ${elapsedSeconds}s elapsed. Your document is safely saved. Please keep this page open.`);
+      await new Promise(resolve => setTimeout(resolve, 3000));
     }
 
-    return null;
+    throw new Error(`The analysis is taking longer than expected. Your RFP is safely saved with status "${lastStatus}". You can refresh the dashboard and open the report as soon as it is ready.`);
   }
 
   async function analyzeRfp() {
@@ -297,112 +192,53 @@ export default function Dashboard() {
 
     try {
       const { data: { user } } = await supabase.auth.getUser();
-      if (!user) {
-        window.location.href = "/login";
-        return;
-      }
+      if (!user) { window.location.href = "/login"; return; }
 
       const saved = await saveRfpIfNeeded(user.id);
-      const analyzingRecord: RfpRecord = {
-        ...saved,
-        status: "analyzing",
-        updated_at: new Date().toISOString(),
-      };
-
-      setRfp(analyzingRecord);
+      setRfp({ ...saved, status: "analyzing", updated_at: new Date().toISOString() });
       setStatus("Analyzing your RFP… ArchBid is extracting the document text and evaluating the bid intelligence. Please keep this page open.");
 
-      // The analysis API can take longer than the browser request normally feels comfortable waiting.
-      // Start it, but independently watch Supabase for the saved analysis. This means the UI no longer
-      // depends on the HTTP response arriving first. In your previous test the server saved the analysis
-      // successfully even though the browser was still waiting.
-      const analysisRequest = fetch("/api/analyze", {
+      // IMPORTANT: The API request is intentionally NOT raced against the database poll.
+      // If Vercel delays or terminates the HTTP response, the saved analysis can still be
+      // discovered in Supabase. We only care about the database result here.
+      fetch("/api/analyze", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ rfpId: saved.id }),
-      }).then(async (response) => {
+      }).then(async response => {
         const result = await response.json().catch(() => ({}));
-        if (!response.ok) {
-          throw new Error(result.error || "Analysis request failed.");
-        }
-        return result as { analysisId?: string };
+        if (!response.ok) console.error("ArchBid analysis API returned an error:", result);
+        else console.log("ArchBid analysis API completed:", result);
+      }).catch(error => {
+        // Do not stop polling. The server may still finish/save the analysis.
+        console.error("ArchBid analysis request ended with an error; continuing database polling:", error);
       });
 
-      const savedAnalysisPromise = waitForSavedAnalysis(saved.id);
-
-      // Whichever completes first wins. Usually the database poll will detect the saved analysis
-      // immediately after the server finishes, even if the HTTP response is delayed.
-      const winner = await Promise.race([
-        analysisRequest.then((result) => ({ source: "request" as const, analysisId: result.analysisId ?? null })),
-        savedAnalysisPromise.then((analysisId) => ({ source: "database" as const, analysisId })),
-      ]);
-
-      if (!winner.analysisId) {
-        // Give the database one final check before declaring failure. The analysis may have been
-        // saved at almost exactly the same time the request returned.
-        const finalAnalysisId = await waitForSavedAnalysis(saved.id, 15000);
-        if (!finalAnalysisId) {
-          throw new Error("The analysis is taking longer than expected. Your RFP is saved; please keep this page open or refresh later to view the report.");
-        }
-        winner.analysisId = finalAnalysisId;
-      }
-
-      setRfp({
-        ...saved,
-        status: "analyzed",
-        updated_at: new Date().toISOString(),
-        analysis_id: winner.analysisId,
-      });
+      const analysisId = await waitForSavedAnalysis(saved.id);
+      const analyzedRfp = { ...saved, status: "analyzed", updated_at: new Date().toISOString(), analysis_id: analysisId };
+      setRfp(analyzedRfp);
+      setRecentRfPs(current => [analyzedRfp, ...current.filter(r => r.id !== analyzedRfp.id)]);
       setStatus("Analysis complete. Your RFP intelligence report has been saved.");
-      window.location.href = `/results/${winner.analysisId}`;
+      window.location.href = `/results/${analysisId}`;
     } catch (error) {
       console.error("ArchBid analysis UI error:", error);
-
-      // If the request itself failed, perform a last database check. The server can sometimes
-      // finish and save the analysis even after the client-side request encounters an error.
-      try {
-        if (rfp?.id) {
-          const { data: existingAnalysis } = await supabase
-            .from("rfp_analyses")
-            .select("id")
-            .eq("rfp_id", rfp.id)
-            .maybeSingle();
-
-          if (existingAnalysis?.id) {
-            setRfp((current) => current ? { ...current, status: "analyzed", analysis_id: existingAnalysis.id } : current);
-            window.location.href = `/results/${existingAnalysis.id}`;
-            return;
-          }
-        }
-      } catch (checkError) {
-        console.error("Final analysis status check failed:", checkError);
-      }
-
       setStatus(error instanceof Error ? error.message : "We could not analyze your RFP. Your document is still saved.");
-      setRfp((current) => current ? { ...current, status: "failed", updated_at: new Date().toISOString() } : current);
+      setRfp(current => current ? { ...current, status: "failed", updated_at: new Date().toISOString() } : current);
     } finally {
       setBusy(false);
     }
   }
 
-  async function signOut() {
-    await supabase.auth.signOut();
-    window.location.href = "/";
-  }
+  async function signOut() { await supabase.auth.signOut(); window.location.href = "/"; }
 
-  if (loadingUser) {
-    return <main className="dashboard loading-screen">Loading your ArchBid workspace…</main>;
-  }
+  if (loadingUser) return <main className="dashboard loading-screen">Loading your ArchBid workspace…</main>;
 
   const displayName = rfp?.file_name || file?.name || "Drop your RFP here";
   const fileSize = file ? `${(file.size / 1024 / 1024).toFixed(1)} MB` : "";
   const isAnalyzing = rfp?.status === "analyzing" || busy;
 
   function openSavedAnalysis() {
-    if (!rfp?.analysis_id) {
-      setStatus("No saved analysis was found for this RFP. Please analyze it first.");
-      return;
-    }
+    if (!rfp?.analysis_id) { setStatus("No saved analysis was found for this RFP. Please analyze it first."); return; }
     window.location.href = `/results/${rfp.analysis_id}`;
   }
 
@@ -420,49 +256,31 @@ export default function Dashboard() {
       <section className="container dash-content">
         <div className="welcome-row"><div><div className="section-label">RFP ANALYZER</div><h1>Welcome, {firmName}</h1><p className="dash-copy">Upload an RFP or tender document. ArchBid will extract the information needed to decide whether your firm should pursue it.</p></div></div>
 
-        <div
-          className={`upload ${dragging ? "dragging" : ""}`}
-          onDragOver={(e) => { e.preventDefault(); setDragging(true); }}
-          onDragLeave={() => setDragging(false)}
-          onDrop={onDrop}
-          onClick={() => input.current?.click()}
-        >
+        <div className={`upload ${dragging ? "dragging" : ""}`} onDragOver={e => { e.preventDefault(); setDragging(true); }} onDragLeave={() => setDragging(false)} onDrop={onDrop} onClick={() => input.current?.click()}>
           <input ref={input} type="file" accept=".pdf,.doc,.docx" hidden onChange={onInput} />
           <div className="upload-icon">{isAnalyzing ? "✦" : "↑"}</div>
           <h2>{displayName}</h2>
           <p>{file ? `${fileSize} · Ready` : rfp ? `${rfp.status === "analyzing" ? "Analysis in progress" : rfp.analysis_id ? "Analysis complete" : rfp.status === "failed" ? "Ready to retry" : "Saved"}` : "or click to browse · PDF, DOCX up to 25MB"}</p>
         </div>
 
-        <button
-          className="analyze-button"
-          disabled={isAnalyzing || (!file && !rfp)}
-          onClick={() => {
-            if (rfp?.analysis_id && !file) {
-              openSavedAnalysis();
-              return;
-            }
-            analyzeRfp();
-          }}
-        >
+        <button className="analyze-button" disabled={isAnalyzing || (!file && !rfp)} onClick={() => {
+          if (rfp?.analysis_id && !file) { openSavedAnalysis(); return; }
+          analyzeRfp();
+        }}>
           {isAnalyzing ? "Analyzing your RFP…" : rfp?.analysis_id ? "View saved analysis →" : rfp?.status === "failed" ? "Retry analysis →" : pendingUpload ? "Save & analyze RFP →" : "Analyze RFP →"}
         </button>
 
         {rfp?.analysis_id && !isAnalyzing && <button className="analyze-button" onClick={openSavedAnalysis}>Open RFP intelligence report →</button>}
-
         {loadError && <div className="status-message">{loadError}</div>}
         {status && <div className="status-message">{status}</div>}
 
         <section className="recent-section">
           <h2>Recent RFPs</h2>
           <div className="recent-list">
-            {recentRfPs.map((item) => (
+            {recentRfPs.map(item => (
               <div className="recent-item" key={item.id}>
                 <span>{item.file_name}</span>
-                {item.analysis_id ? (
-                  <button type="button" onClick={() => { window.location.href = `/results/${item.analysis_id}`; }}>View report →</button>
-                ) : (
-                  <span>{item.status || "saved"}</span>
-                )}
+                {item.analysis_id ? <button type="button" onClick={() => { window.location.href = `/results/${item.analysis_id}`; }}>View report →</button> : <span>{item.status || "saved"}</span>}
               </div>
             ))}
           </div>
