@@ -1,10 +1,9 @@
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 
-export function middleware(request: NextRequest) {
-  if (request.nextUrl.pathname === "/dashboard") {
-    return NextResponse.rewrite(new URL("/workspace", request.url));
-  }
+export function middleware(_request: NextRequest) {
+  // Keep /dashboard as the real app/dashboard/page.tsx route.
+  // Do not rewrite it to /workspace.
   return NextResponse.next();
 }
 
