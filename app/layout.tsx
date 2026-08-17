@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import "./globals.css";
+import "./results/[id]/results.css";
 
 export const metadata: Metadata = {
   title: "ArchBid AI — RFP Intelligence for Architecture Firms",
