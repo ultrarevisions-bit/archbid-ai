@@ -771,7 +771,15 @@ export default function Dashboard() {
             isAnalyzing ||
             (!file && !rfp)
           }
-          onClick={analyzeRfp}
+          onClick={() => {
+            if (rfp?.analysis_id && !file) {
+              window.location.href =
+                `/results/${rfp.id}`;
+              return;
+            }
+
+            analyzeRfp();
+          }}
         >
           {isAnalyzing
             ? "Analyzing your RFP…"
