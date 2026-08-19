@@ -10,7 +10,7 @@ export const maxDuration = 60;
 const analysisSchema = {
   type: "object",
   properties: {
-    opportunityScore: { type: "integer" },
+    opportunityScore: { type: "integer", minimum: 0, maximum: 100 },
     recommendation: { type: "string", enum: ["PURSUE", "CONSIDER", "DO NOT PURSUE"] },
     confidence: { type: "string", enum: ["HIGH", "MEDIUM", "LOW"] },
     projectName: { type: "string" },
@@ -23,6 +23,8 @@ const analysisSchema = {
     strengths: { type: "array", items: { type: "string" } },
     risks: { type: "array", items: { type: "string" } },
     missingItems: { type: "array", items: { type: "string" } },
+    criticalRedFlags: { type: "array", items: { type: "string" } },
+    hardDisqualifiers: { type: "array", items: { type: "string" } },
     requirements: {
       type: "array",
       items: {
@@ -37,37 +39,76 @@ const analysisSchema = {
       }
     },
     evaluationCriteria: { type: "array", items: { type: "string" } },
-    submissionRequirements: { type: "array", items: { type: "string" } }
+    submissionRequirements: { type: "array", items: { type: "string" } },
+    criticalDates: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          date: { type: "string" },
+          event: { type: "string" },
+          importance: { type: "string", enum: ["CRITICAL", "IMPORTANT", "INFO"] }
+        },
+        required: ["date", "event", "importance"],
+        additionalProperties: false
+      }
+    },
+    eligibility: { type: "array", items: { type: "string" } },
+    commercial: { type: "array", items: { type: "string" } },
+    competition: { type: "array", items: { type: "string" } },
+    bidEffort: { type: "array", items: { type: "string" } },
+    scoreBreakdown: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          factor: { type: "string" },
+          score: { type: "integer", minimum: 0, maximum: 100 },
+          weight: { type: "integer", minimum: 0, maximum: 100 },
+          reason: { type: "string" }
+        },
+        required: ["factor", "score", "weight", "reason"],
+        additionalProperties: false
+      }
+    }
   },
   required: [
     "opportunityScore", "recommendation", "confidence", "projectName", "clientName",
     "location", "projectType", "deadline", "estimatedBudget", "executiveSummary",
-    "strengths", "risks", "missingItems", "requirements", "evaluationCriteria",
-    "submissionRequirements"
+    "strengths", "risks", "missingItems", "criticalRedFlags", "hardDisqualifiers",
+    "requirements", "evaluationCriteria", "submissionRequirements", "criticalDates",
+    "eligibility", "commercial", "competition", "bidEffort", "scoreBreakdown"
   ],
   additionalProperties: false
 };
 
 const systemPrompt = `You are ArchBid AI, an RFP intelligence analyst for architecture and design firms.
-Analyze the supplied procurement/RFP document carefully. Do not invent facts. If a field is not stated, return "Not stated".
+Analyze the supplied procurement/RFP document carefully. Do not invent facts. If a field is not stated, return "Not stated". Distinguish clearly between facts stated in the RFP and reasonable risk observations.
 
-Produce a PRELIMINARY opportunity score from 0-100 based only on evidence in the RFP and the practical attractiveness of pursuing it. Consider:
-- eligibility and mandatory qualifications
-- scope fit for an architecture/design practice
-- commercial attractiveness when budget/fee information exists
-- submission effort and complexity
-- deadline pressure
-- evaluation criteria and competitive requirements
-- risks, exclusions, certifications, licensing, local experience, and other barriers
+Produce a PRELIMINARY opportunity score from 0-100 based only on evidence in the RFP and the practical attractiveness of pursuing it. Do not treat the score as a personalized firm-fit score because the firm's portfolio/profile is not yet available.
 
-Do not claim that the score is a personalized firm-fit score because the firm's detailed portfolio/profile is not yet available.
+Use these scoring dimensions and weights:
+- Eligibility: 25
+- Scope/project fit: 20
+- Commercial attractiveness: 20
+- Win potential/competition: 15
+- Bid effort: 10
+- Deadline/timing: 5
+- Risk: 5
+Return one score (0-100) for each dimension and explain it briefly. The weighted scores should be internally consistent with the final opportunity score.
+
+A hard eligibility failure or explicit mandatory condition that the unknown firm may not satisfy should materially suppress the overall score and be surfaced as a hard disqualifier. Do not assume the firm fails simply because the RFP requires something; flag it for verification unless the document makes the failure unavoidable.
 
 Recommendation rules:
-PURSUE = strong opportunity with manageable barriers.
-CONSIDER = potentially worthwhile but one or more material uncertainties or barriers need review.
-DO NOT PURSUE = major eligibility, deadline, scope, effort, or risk issues make pursuit unattractive.
+PURSUE = strong opportunity with manageable barriers and no obvious disqualifying issue.
+CONSIDER = potentially worthwhile but one or more material uncertainties, effort requirements, or barriers need review.
+DO NOT PURSUE = major eligibility, deadline, scope, effort, or risk issues make pursuit unattractive based on the RFP evidence.
 
-Extract concrete requirements, evaluation criteria, submission requirements, deadlines, budget/fee information, risks, and missing items. Keep each list concise but useful to a busy architecture firm. Return valid JSON matching the supplied schema.`;
+Extract concrete requirements, evaluation criteria, submission requirements, all important dates you can identify, eligibility conditions, commercial information, competitive/win factors, bid effort, risks, missing information, and critical red flags. Prioritize facts that could change a go/no-go decision. Keep lists concise and useful to a busy architecture firm.
+
+For criticalDates, include dates such as RFP release, questions deadline, mandatory pre-proposal meeting, site visit, proposal deadline, interviews, award, and anticipated start when stated. Use "Not stated" for a date that is relevant but unavailable only when it is important enough to flag; do not manufacture dates.
+
+For scoreBreakdown, use exactly the seven scoring dimensions above with the corresponding weights. Return valid JSON matching the supplied schema.`;
 
 const jsonFormat = {
   type: "json_schema" as const,
@@ -84,7 +125,6 @@ function buildDocumentText(fileName: string, fileType: string | null, buffer: Bu
     return pdf(buffer).then(parsed => {
       const text = parsed.text.trim();
       if (!text) throw new Error("This PDF does not contain readable text. A scanned/image-only PDF needs OCR, which we will add in a later version.");
-      // Keep both the beginning and end of unusually large RFPs so deadlines and submission instructions are less likely to be lost.
       if (text.length > 300000) {
         return `${text.slice(0, 220000)}\n\n[Middle of very large document omitted for this analysis pass.]\n\n${text.slice(-80000)}`;
       }
@@ -130,8 +170,6 @@ export async function POST(request: Request) {
   await supabase.from("rfps").update({ status: "analyzing", updated_at: new Date().toISOString() }).eq("id", rfp.id).eq("user_id", user.id);
 
   try {
-    // Download from Supabase and extract text locally instead of uploading the PDF to OpenAI's Files API.
-    // This avoids the long provider-side PDF processing step that was causing the Vercel request to sit on "Analyzing".
     const { data: fileBlob, error: downloadError } = await supabase.storage.from("rfps").download(rfp.file_path);
     if (downloadError || !fileBlob) throw new Error("We could not retrieve the RFP from secure storage.");
 
