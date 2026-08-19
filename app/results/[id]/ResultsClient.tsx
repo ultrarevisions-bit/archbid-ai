@@ -66,6 +66,18 @@ function stringList(value: unknown): string[] {
     .filter(Boolean);
 }
 
+function objectList(value: unknown): Array<Record<string, unknown>> {
+  if (!Array.isArray(value)) return [];
+  return value.filter((item): item is Record<string, unknown> => Boolean(item && typeof item === "object"));
+}
+
+function formatDate(value: unknown) {
+  const text = asString(value, "Not stated");
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(text)) return text;
+  const date = new Date(`${text}T00:00:00`);
+  return Number.isNaN(date.getTime()) ? text : date.toLocaleDateString("en-US", { year: "numeric", month: "short", day: "numeric" });
+}
+
 function requirementList(value: unknown): Array<Record<string, unknown>> {
   if (!Array.isArray(value)) return [];
   return value.map((item) => {
@@ -223,6 +235,14 @@ export default function ResultsClient() {
   const risks = stringList(analysis.risks);
   const strengths = stringList(analysis.strengths);
   const missing = stringList(analysis.missing_items);
+  const redFlags = stringList(raw.criticalRedFlags);
+  const hardDisqualifiers = stringList(raw.hardDisqualifiers);
+  const criticalDates = objectList(raw.criticalDates);
+  const eligibility = stringList(raw.eligibility);
+  const commercial = stringList(raw.commercial);
+  const competition = stringList(raw.competition);
+  const bidEffort = stringList(raw.bidEffort);
+  const scoreBreakdown = objectList(raw.scoreBreakdown);
 
   return (
     <main className="results-page">
@@ -258,14 +278,46 @@ export default function ResultsClient() {
           <p>{asString(raw.executiveSummary, "ArchBid reviewed the available RFP evidence and identified the main pursuit factors below.")}</p>
         </div>
 
+        {redFlags.length > 0 && (
+          <section className="alert-card red-flag-card">
+            <div className="alert-heading"><span className="alert-icon">!</span><div><span>ATTENTION</span><h2>Critical red flags to review</h2></div></div>
+            <ul>{redFlags.map((item, i) => <li key={i}>{item}</li>)}</ul>
+          </section>
+        )}
+
+        {hardDisqualifiers.length > 0 && (
+          <section className="alert-card disqualifier-card">
+            <div className="alert-heading"><span className="alert-icon">×</span><div><span>GO / NO-GO CHECK</span><h2>Potential hard disqualifiers</h2></div></div>
+            <ul>{hardDisqualifiers.map((item, i) => <li key={i}>{item}</li>)}</ul>
+          </section>
+        )}
+
         <div className="facts-grid">
           <div><span>CLIENT</span><strong>{analysis.client_name || "Not stated"}</strong></div>
           <div><span>LOCATION</span><strong>{analysis.location || "Not stated"}</strong></div>
           <div><span>PROJECT TYPE</span><strong>{analysis.project_type || "Not stated"}</strong></div>
-          <div><span>DEADLINE</span><strong>{analysis.deadline || "Not stated"}</strong></div>
+          <div><span>DEADLINE</span><strong>{analysis.deadline ? formatDate(analysis.deadline) : "Not stated"}</strong></div>
           <div><span>ESTIMATED BUDGET</span><strong>{asString(raw.estimatedBudget, "Not stated")}</strong></div>
           <div><span>CONFIDENCE</span><strong>{asString(raw.confidence, "MEDIUM")}</strong></div>
         </div>
+
+        {criticalDates.length > 0 && (
+          <section className="report-card full timeline-card">
+            <div className="section-heading-row"><div><span className="mini-label">TIMELINE</span><h2>Critical dates</h2></div><span className="section-note">Dates found in the RFP</span></div>
+            <div className="timeline-list">
+              {criticalDates.map((item, i) => {
+                const importance = asString(item.importance, "INFO");
+                return (
+                  <div className="timeline-item" key={i}>
+                    <div className="timeline-date">{formatDate(item.date)}</div>
+                    <div className="timeline-event"><strong>{asString(item.event, "RFP milestone")}</strong></div>
+                    <span className={`importance ${importance.toLowerCase()}`}>{importance}</span>
+                  </div>
+                );
+              })}
+            </div>
+          </section>
+        )}
 
         <div className="report-grid">
           <section className="report-card">
@@ -275,6 +327,46 @@ export default function ResultsClient() {
           <section className="report-card risk-card">
             <h2>Risks to review</h2>
             {risks.length ? <ul>{risks.map((item, i) => <li key={i}>{item}</li>)}</ul> : <p>No major risks were identified from the available information.</p>}
+          </section>
+        </div>
+
+        {scoreBreakdown.length > 0 && (
+          <section className="report-card full">
+            <div className="section-heading-row"><div><span className="mini-label">DECISION SUPPORT</span><h2>Why this score?</h2></div><span className="section-note">Preliminary RFP-based scoring</span></div>
+            <div className="score-breakdown">
+              {scoreBreakdown.map((item, i) => {
+                const factorScore = Math.max(0, Math.min(100, Number(item.score ?? 0)));
+                return (
+                  <div className="score-factor" key={i}>
+                    <div className="score-factor-top"><strong>{asString(item.factor, "Factor")}</strong><span>{factorScore}/100 · {asString(item.weight, "0")}% weight</span></div>
+                    <div className="score-bar"><span style={{ width: `${factorScore}%` }} /></div>
+                    <p>{asString(item.reason, "No explanation provided.")}</p>
+                  </div>
+                );
+              })}
+            </div>
+          </section>
+        )}
+
+        <div className="report-grid">
+          <section className="report-card">
+            <h2>Eligibility & firm requirements</h2>
+            {eligibility.length ? <ul>{eligibility.map((item, i) => <li key={i}>{item}</li>)}</ul> : <p>No additional eligibility conditions were clearly extracted.</p>}
+          </section>
+          <section className="report-card">
+            <h2>Commercial intelligence</h2>
+            {commercial.length ? <ul>{commercial.map((item, i) => <li key={i}>{item}</li>)}</ul> : <p>No commercial details were clearly stated.</p>}
+          </section>
+        </div>
+
+        <div className="report-grid">
+          <section className="report-card">
+            <h2>Competition & win factors</h2>
+            {competition.length ? <ul>{competition.map((item, i) => <li key={i}>{item}</li>)}</ul> : <p>No specific competitive factors were extracted.</p>}
+          </section>
+          <section className="report-card">
+            <h2>Bid effort</h2>
+            {bidEffort.length ? <ul>{bidEffort.map((item, i) => <li key={i}>{item}</li>)}</ul> : <p>No unusual submission effort was identified.</p>}
           </section>
         </div>
 
