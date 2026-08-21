@@ -27,7 +27,7 @@ export async function GET(request: Request) {
 
   const { data: rfp, error: rfpError } = await supabase
     .from("rfps")
-    .select("id, user_id, status")
+    .select("id, user_id, status, updated_at")
     .eq("id", rfpId)
     .eq("user_id", user.id)
     .single();
@@ -56,6 +56,18 @@ export async function GET(request: Request) {
       await supabase.from("rfps").update({ status: "analyzed", updated_at: new Date().toISOString() }).eq("id", rfpId).eq("user_id", user.id);
     }
     return NextResponse.json({ status: "completed", rfpId, analysisId: analysis.id });
+  }
+
+  // RFPs created by the old synchronous implementation can be stuck at
+  // "analyzing" without an OpenAI job record. After 10 minutes they are safe to
+  // classify as failed so the user gets a Retry button instead of an endless spinner.
+  if (!analysis && rfp.status === "analyzing") {
+    const updatedAt = new Date(rfp.updated_at).getTime();
+    if (Number.isFinite(updatedAt) && Date.now() - updatedAt > 10 * 60 * 1000) {
+      const message = "The previous analysis job did not finish. The RFP is safe and can be retried.";
+      await supabase.from("rfps").update({ status: "failed", updated_at: new Date().toISOString() }).eq("id", rfpId).eq("user_id", user.id);
+      return NextResponse.json({ status: "failed", rfpId, analysisId: null, error: message });
+    }
   }
 
   if (!responseId) return NextResponse.json({ status: rfp.status === "failed" ? "failed" : "not_started", rfpId });
