@@ -17,7 +17,7 @@ type RfpRecord = {
   analysis_id?: string | null;
 };
 
-type AnalysisRecord = { id: string; rfp_id: string };
+type AnalysisRecord = { id: string; rfp_id: string; raw_analysis?: unknown };
 
 export default function Dashboard() {
   const input = useRef<HTMLInputElement>(null);
@@ -41,11 +41,31 @@ export default function Dashboard() {
 
   async function refreshRfpStatuses(records: RfpRecord[]) {
     if (!records.length) return records;
-    const ids = records.map(record => record.id);
 
+    // Ask the server to advance any background OpenAI jobs. This is intentionally
+    // separate from the browser request that started the job, so leaving the page
+    // does not cancel the AI analysis.
+    const pending = records.filter(record => record.status === "analyzing" && !record.analysis_id);
+    await Promise.all(pending.map(async record => {
+      try {
+        const response = await fetch(`/api/analyze/status?rfpId=${encodeURIComponent(record.id)}`, { cache: "no-store" });
+        const result = await response.json().catch(() => ({}));
+        if (result.status === "completed" && result.analysisId) {
+          record.analysis_id = result.analysisId;
+          record.status = "analyzed";
+        } else if (result.status === "failed") {
+          record.status = "failed";
+          record.analysis_id = null;
+        }
+      } catch (error) {
+        console.warn("Background analysis status check failed:", error);
+      }
+    }));
+
+    const ids = records.map(record => record.id);
     const { data: analyses, error: analysisError } = await supabase
       .from("rfp_analyses")
-      .select("id, rfp_id")
+      .select("id, rfp_id, raw_analysis")
       .in("rfp_id", ids);
 
     if (analysisError) {
@@ -53,11 +73,15 @@ export default function Dashboard() {
       return records;
     }
 
-    const analysisMap = new Map<string, string>();
-    ((analyses ?? []) as AnalysisRecord[]).forEach(item => analysisMap.set(item.rfp_id, item.id));
+    const completedMap = new Map<string, string>();
+    ((analyses ?? []) as AnalysisRecord[]).forEach(item => {
+      const raw = item.raw_analysis && typeof item.raw_analysis === "object" ? item.raw_analysis as Record<string, unknown> : {};
+      const processing = raw.processing === true && typeof raw.openai_response_id === "string";
+      if (!processing) completedMap.set(item.rfp_id, item.id);
+    });
 
     return records.map(record => {
-      const analysisId = analysisMap.get(record.id) ?? null;
+      const analysisId = record.analysis_id ?? completedMap.get(record.id) ?? null;
       return {
         ...record,
         analysis_id: analysisId,
@@ -136,9 +160,8 @@ export default function Dashboard() {
     return () => { cancelled = true; };
   }, []);
 
-  // Persistent background status checker. There is deliberately NO elapsed-time
-  // counter. The database status is the source of truth, so an RFP remains in the
-  // Recent RFPs list as "Analyzing" until rfp_analyses is actually saved.
+  // Poll the server-side background job. There is deliberately NO elapsed-time
+  // counter. The database status is the source of truth.
   useEffect(() => {
     if (loadingUser || !recentRfPs.some(item => item.status === "analyzing" && !item.analysis_id)) return;
 
@@ -151,19 +174,22 @@ export default function Dashboard() {
       const updated = await refreshRfpStatuses(pending);
       if (stopped) return;
 
+      setRecentRfPs(current => current.map(existing => {
+        const next = updated.find(item => item.id === existing.id);
+        return next ? next : existing;
+      }));
+
       updated.forEach(item => {
-        if (item.analysis_id) {
-          setRecentRfPs(current => current.map(existing => existing.id === item.id ? item : existing));
+        if (item.analysis_id || item.status === "failed") {
           setRfp(current => current?.id === item.id ? item : current);
-        } else if (item.status === "failed") {
-          setRecentRfPs(current => current.map(existing => existing.id === item.id ? item : existing));
-          setRfp(current => current?.id === item.id ? item : current);
+          if (item.analysis_id) setStatus("Your latest RFP analysis is complete. You can view the report below.");
+          if (item.status === "failed") setStatus("The RFP analysis failed. Your document is safe and can be retried.");
         }
       });
     };
 
     checkStatuses();
-    const interval = window.setInterval(checkStatuses, 3000);
+    const interval = window.setInterval(checkStatuses, 5000);
     return () => { stopped = true; window.clearInterval(interval); };
   }, [loadingUser, recentRfPs]);
 
@@ -228,19 +254,18 @@ export default function Dashboard() {
   }
 
   async function startAnalysis(rfpRecord: RfpRecord) {
-    // Do not await the analysis request. The API can take longer than a browser/Vercel
-    // request window, while the server can continue and save the analysis. The dashboard
-    // watches Supabase instead.
+    // This request only starts the OpenAI background job. It no longer waits for the
+    // model to finish. The dashboard polls /api/analyze/status separately.
     fetch("/api/analyze", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ rfpId: rfpRecord.id }),
     }).then(async response => {
       const result = await response.json().catch(() => ({}));
-      if (!response.ok) console.error("ArchBid analysis API returned an error:", result);
-      else console.log("ArchBid analysis API completed:", result);
+      if (!response.ok) console.error("ArchBid analysis start error:", result);
+      else console.log("ArchBid background analysis started:", result);
     }).catch(error => {
-      console.error("ArchBid analysis request ended; background status checking continues:", error);
+      console.error("ArchBid analysis start request failed; status polling continues:", error);
     });
   }
 
@@ -257,8 +282,7 @@ export default function Dashboard() {
       const analyzing = { ...saved, status: "analyzing", updated_at: new Date().toISOString(), analysis_id: null } as RfpRecord;
 
       mergeRfp(analyzing);
-      setStatus("Your RFP has been saved. It is now being analyzed. You can leave this page; the status will update when the report is ready.");
-
+      setStatus("Your RFP has been saved. Analysis is running in the background. You can leave this page and come back later.");
       await startAnalysis(analyzing);
     } catch (error) {
       console.error("ArchBid analysis UI error:", error);
@@ -267,7 +291,6 @@ export default function Dashboard() {
       return;
     }
 
-    // Saving the RFP is complete. Analysis itself is now a background process.
     setBusy(false);
   }
 
@@ -281,6 +304,7 @@ export default function Dashboard() {
 
     try {
       await supabase.from("rfps").update({ status: "analyzing", updated_at: new Date().toISOString() }).eq("id", item.id);
+      await supabase.from("rfp_analyses").delete().eq("rfp_id", item.id);
       await startAnalysis(analyzing);
     } catch (error) {
       console.error("Retry analysis error:", error);
