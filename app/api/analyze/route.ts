@@ -150,13 +150,11 @@ export async function POST(request: Request) {
 
   const body = await request.json().catch(() => null);
   const rfpId = body?.rfpId;
-  if (!rfpId || typeof rfpId !== "string") {
-    return NextResponse.json({ error: "Missing RFP ID." }, { status: 400 });
-  }
+  if (!rfpId || typeof rfpId !== "string") return NextResponse.json({ error: "Missing RFP ID." }, { status: 400 });
 
   const { data: rfp, error: rfpError } = await supabase
     .from("rfps")
-    .select("id, user_id, file_name, file_path, file_type")
+    .select("id, user_id, file_name, file_path, file_type, status")
     .eq("id", rfpId)
     .eq("user_id", user.id)
     .single();
@@ -166,6 +164,23 @@ export async function POST(request: Request) {
 
   const apiKey = process.env.OPENAI_API_KEY;
   if (!apiKey) return NextResponse.json({ error: "ArchBid AI is not connected to its AI provider yet. Add OPENAI_API_KEY in Vercel Environment Variables." }, { status: 503 });
+
+  // If an analysis job already exists, do not accidentally start a second AI job.
+  const { data: existingAnalysis } = await supabase
+    .from("rfp_analyses")
+    .select("id, raw_analysis")
+    .eq("rfp_id", rfp.id)
+    .maybeSingle();
+
+  const existingRaw = existingAnalysis?.raw_analysis && typeof existingAnalysis.raw_analysis === "object"
+    ? existingAnalysis.raw_analysis as Record<string, unknown>
+    : null;
+  const existingResponseId = typeof existingRaw?.openai_response_id === "string" ? existingRaw.openai_response_id : null;
+
+  if (existingAnalysis?.id && existingResponseId && existingRaw?.processing === true) {
+    await supabase.from("rfps").update({ status: "analyzing", updated_at: new Date().toISOString() }).eq("id", rfp.id).eq("user_id", user.id);
+    return NextResponse.json({ success: true, status: "already_running", rfpId: rfp.id, analysisId: existingAnalysis.id });
+  }
 
   await supabase.from("rfps").update({ status: "analyzing", updated_at: new Date().toISOString() }).eq("id", rfp.id).eq("user_id", user.id);
 
@@ -177,46 +192,50 @@ export async function POST(request: Request) {
     const documentText = await buildDocumentText(rfp.file_name, rfp.file_type, buffer);
     if (documentText.length < 50) throw new Error("The RFP text is too short to analyze.");
 
-    const ai = new OpenAI({ apiKey, timeout: 45000, maxRetries: 1 });
-    const response = await ai.responses.create({
-      model: "gpt-5.6",
-      input: `${systemPrompt}\n\nRFP DOCUMENT TEXT:\n${documentText}`,
-      text: { format: jsonFormat }
+    // Start the OpenAI job in background mode. The HTTP request returns after the job
+    // is accepted instead of waiting for the model to finish. A separate status route
+    // retrieves the response and saves the finished analysis into Supabase.
+    const openaiResponse = await fetch("https://api.openai.com/v1/responses", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify({
+        model: "gpt-5.6",
+        background: true,
+        store: true,
+        input: `${systemPrompt}\n\nRFP DOCUMENT TEXT:\n${documentText}`,
+        text: { format: jsonFormat },
+      }),
     });
 
-    if (!response.output_text) throw new Error("The AI returned an empty analysis.");
-    const analysis = JSON.parse(response.output_text);
+    const responseJson = await openaiResponse.json().catch(() => ({}));
+    if (!openaiResponse.ok || !responseJson?.id) {
+      throw new Error(responseJson?.error?.message || "The AI provider could not start the background analysis.");
+    }
+
+    const analysisPayload = {
+      rfp_id: rfp.id,
+      raw_analysis: {
+        processing: true,
+        openai_response_id: responseJson.id,
+        started_at: new Date().toISOString()
+      }
+    };
 
     const { data: savedAnalysis, error: analysisError } = await supabase
       .from("rfp_analyses")
-      .upsert({
-        rfp_id: rfp.id,
-        opportunity_score: analysis.opportunityScore,
-        recommendation: analysis.recommendation,
-        project_name: analysis.projectName,
-        client_name: analysis.clientName,
-        location: analysis.location,
-        project_type: analysis.projectType,
-        deadline: analysis.deadline && /^\d{4}-\d{2}-\d{2}$/.test(analysis.deadline) ? analysis.deadline : null,
-        requirements: analysis.requirements,
-        evaluation_criteria: analysis.evaluationCriteria,
-        submission_requirements: analysis.submissionRequirements,
-        risks: analysis.risks,
-        strengths: analysis.strengths,
-        missing_items: analysis.missingItems,
-        raw_analysis: analysis
-      }, { onConflict: "rfp_id" })
+      .upsert(analysisPayload, { onConflict: "rfp_id" })
       .select("id")
       .single();
 
-    if (analysisError || !savedAnalysis) throw new Error("The AI analysis completed, but we could not save the result.");
+    if (analysisError || !savedAnalysis) throw new Error("The AI job started, but ArchBid could not save its job status.");
 
-    await supabase.from("rfps").update({ status: "analyzed", updated_at: new Date().toISOString() }).eq("id", rfp.id).eq("user_id", user.id);
-
-    return NextResponse.json({ success: true, rfpId: rfp.id, analysisId: savedAnalysis.id });
+    return NextResponse.json({ success: true, status: "started", rfpId: rfp.id, analysisId: savedAnalysis.id });
   } catch (error) {
-    console.error("ArchBid analysis error:", error);
+    console.error("ArchBid analysis start error:", error);
     await supabase.from("rfps").update({ status: "failed", updated_at: new Date().toISOString() }).eq("id", rfp.id).eq("user_id", user.id);
-    return NextResponse.json({ error: error instanceof Error ? error.message : "Analysis failed. Please try again." }, { status: 500 });
+    return NextResponse.json({ error: error instanceof Error ? error.message : "Analysis could not be started." }, { status: 500 });
   }
 }
