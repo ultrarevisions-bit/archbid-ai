@@ -7,7 +7,6 @@ export const maxDuration = 30;
 
 function extractOutputText(response: any): string {
   if (typeof response?.output_text === "string" && response.output_text.trim()) return response.output_text.trim();
-
   const chunks: string[] = [];
   for (const item of Array.isArray(response?.output) ? response.output : []) {
     for (const content of Array.isArray(item?.content) ? item.content : []) {
@@ -20,7 +19,6 @@ function extractOutputText(response: any): string {
 export async function GET(request: Request) {
   const supabase = await createSupabaseServerClient();
   const { data: { user } } = await supabase.auth.getUser();
-
   if (!user) return NextResponse.json({ error: "You must be signed in." }, { status: 401 });
 
   const url = new URL(request.url);
@@ -33,7 +31,6 @@ export async function GET(request: Request) {
     .eq("id", rfpId)
     .eq("user_id", user.id)
     .single();
-
   if (rfpError || !rfp) return NextResponse.json({ error: "RFP not found." }, { status: 404 });
 
   const { data: analysis, error: analysisError } = await supabase
@@ -41,24 +38,27 @@ export async function GET(request: Request) {
     .select("id, rfp_id, raw_analysis")
     .eq("rfp_id", rfpId)
     .maybeSingle();
-
   if (analysisError) return NextResponse.json({ error: analysisError.message }, { status: 500 });
 
   const raw = analysis?.raw_analysis && typeof analysis.raw_analysis === "object"
     ? analysis.raw_analysis as Record<string, unknown>
     : null;
   const responseId = typeof raw?.openai_response_id === "string" ? raw.openai_response_id : null;
+  const processing = raw?.processing === true;
+  const storedError = typeof raw?.error === "string" ? raw.error : null;
 
-  if (analysis?.id && !responseId) {
+  if (analysis?.id && storedError && !processing) {
+    return NextResponse.json({ status: "failed", rfpId, analysisId: null, error: storedError });
+  }
+
+  if (analysis?.id && !responseId && !processing) {
     if (rfp.status !== "analyzed") {
       await supabase.from("rfps").update({ status: "analyzed", updated_at: new Date().toISOString() }).eq("id", rfpId).eq("user_id", user.id);
     }
     return NextResponse.json({ status: "completed", rfpId, analysisId: analysis.id });
   }
 
-  if (!responseId) {
-    return NextResponse.json({ status: rfp.status === "failed" ? "failed" : "not_started", rfpId });
-  }
+  if (!responseId) return NextResponse.json({ status: rfp.status === "failed" ? "failed" : "not_started", rfpId });
 
   const apiKey = process.env.OPENAI_API_KEY;
   if (!apiKey) return NextResponse.json({ error: "OPENAI_API_KEY is missing." }, { status: 503 });
@@ -82,7 +82,12 @@ export async function GET(request: Request) {
     const outputText = extractOutputText(response);
     if (!outputText) return NextResponse.json({ status: "analyzing", rfpId, analysisId: null });
 
-    const parsed = JSON.parse(outputText);
+    let parsed: any;
+    try {
+      parsed = JSON.parse(outputText);
+    } catch {
+      return NextResponse.json({ status: "analyzing", rfpId, analysisId: null });
+    }
 
     const { error: saveError } = await supabase
       .from("rfp_analyses")
@@ -109,7 +114,6 @@ export async function GET(request: Request) {
     if (saveError) throw saveError;
 
     await supabase.from("rfps").update({ status: "analyzed", updated_at: new Date().toISOString() }).eq("id", rfpId).eq("user_id", user.id);
-
     return NextResponse.json({ status: "completed", rfpId, analysisId: analysis!.id });
   } catch (error) {
     console.error("ArchBid analysis status error:", error);
