@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import type { ReactNode } from "react";
 import { createClient } from "@/lib/supabase/client";
 import "./results.css";
@@ -113,45 +113,85 @@ export default function ResultsClient() {
     const supabase = createClient();
     async function loadResults() {
       try {
-        setLoading(true); setError("");
+        setLoading(true);
+        setError("");
         const { data: { user }, error: authError } = await supabase.auth.getUser();
         if (authError) throw new Error(`Authentication error: ${authError.message}`);
-        if (!user) { router.replace("/login"); return; }
+        if (!user) {
+          router.replace("/login");
+          return;
+        }
 
         let foundAnalysis: Analysis | null = null;
-        const { data: byAnalysisId, error: analysisIdError } = await supabase.from("rfp_analyses").select("*").eq("id", id).maybeSingle();
+        const { data: byAnalysisId, error: analysisIdError } = await supabase
+          .from("rfp_analyses")
+          .select("*")
+          .eq("id", id)
+          .maybeSingle();
         if (analysisIdError) throw new Error(`Could not load the analysis: ${analysisIdError.message}`);
         foundAnalysis = byAnalysisId as Analysis | null;
+
         if (!foundAnalysis) {
-          const { data: byRfpId, error: rfpIdError } = await supabase.from("rfp_analyses").select("*").eq("rfp_id", id).maybeSingle();
+          const { data: byRfpId, error: rfpIdError } = await supabase
+            .from("rfp_analyses")
+            .select("*")
+            .eq("rfp_id", id)
+            .maybeSingle();
           if (rfpIdError) throw new Error(`Could not find the saved analysis: ${rfpIdError.message}`);
           foundAnalysis = byRfpId as Analysis | null;
         }
         if (!foundAnalysis) throw new Error("No saved analysis was found for this RFP.");
 
-        const { data: foundRfp, error: rfpError } = await supabase.from("rfps").select("file_name, user_id").eq("id", foundAnalysis.rfp_id).eq("user_id", user.id).maybeSingle();
+        const { data: foundRfp, error: rfpError } = await supabase
+          .from("rfps")
+          .select("file_name, user_id")
+          .eq("id", foundAnalysis.rfp_id)
+          .eq("user_id", user.id)
+          .maybeSingle();
         if (rfpError) throw new Error(`Could not load the RFP: ${rfpError.message}`);
         if (!foundRfp) throw new Error("This saved analysis does not belong to the signed-in account.");
-        if (!cancelled) { setAnalysis(foundAnalysis); setRfp(foundRfp as Rfp); }
+
+        if (!cancelled) {
+          setAnalysis(foundAnalysis);
+          setRfp(foundRfp as Rfp);
+        }
       } catch (err) {
         console.error("ARCHBID RESULTS LOAD ERROR:", err);
         if (!cancelled) setError(err instanceof Error ? err.message : "We could not load this analysis.");
-      } finally { if (!cancelled) setLoading(false); }
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
     }
     loadResults();
     return () => { cancelled = true; };
   }, [id, router]);
 
-  if (loading) return <main className="results-page"><div className="container results-container"><div className="loading-card">Loading your RFP intelligence report…</div></div></main>;
+  if (loading) {
+    return <main className="results-page"><div className="container results-container"><div className="loading-card">Loading your RFP intelligence report…</div></div></main>;
+  }
 
-  if (error || !analysis || !rfp) return (
-    <main className="results-page">
-      <nav className="results-nav container"><Link className="brand" href="/"><span className="brand-mark">A</span> ArchBid <span className="brand-ai">AI</span></Link><Link className="nav-button" href="/dashboard">Dashboard</Link></nav>
-      <section className="container results-container"><div className="report-card full error-card"><div className="section-label">RFP INTELLIGENCE REPORT</div><h1>We couldn't load this analysis</h1><p>{error || "The saved analysis could not be found."}</p><Link className="nav-button" href="/dashboard">Back to Dashboard →</Link></div></section>
-    </main>
-  );
+  if (error || !analysis || !rfp) {
+    return (
+      <main className="results-page">
+        <nav className="results-nav container">
+          <Link className="brand" href="/"><span className="brand-mark">A</span> ArchBid <span className="brand-ai">AI</span></Link>
+          <Link className="nav-button" href="/dashboard">Dashboard</Link>
+        </nav>
+        <section className="container results-container">
+          <div className="report-card full error-card">
+            <div className="section-label">RFP INTELLIGENCE REPORT</div>
+            <h1>We couldn't load this analysis</h1>
+            <p>{error || "The saved analysis could not be found."}</p>
+            <Link className="nav-button" href="/dashboard">Back to Dashboard →</Link>
+          </div>
+        </section>
+      </main>
+    );
+  }
 
-  const raw = analysis.raw_analysis && typeof analysis.raw_analysis === "object" ? analysis.raw_analysis as RecordValue : {};
+  const raw = analysis.raw_analysis && typeof analysis.raw_analysis === "object"
+    ? analysis.raw_analysis as RecordValue
+    : {};
   const score = Number(analysis.opportunity_score ?? 0);
   const recommendation = recommendationLabel(analysis.recommendation);
   const recommendationClass = scoreClass(score);
@@ -169,8 +209,20 @@ export default function ResultsClient() {
   const competition = stringList(raw.competition);
   const bidEffort = stringList(raw.bidEffort);
   const scoreBreakdown = objectList(raw.scoreBreakdown);
-  const topReasons = useMemo(() => (recommendation === "PURSUE" ? strengths : [...redFlags, ...risks, ...hardDisqualifiers]).filter(Boolean).slice(0, 4), [recommendation, strengths, redFlags, risks, hardDisqualifiers]);
-  const nextAction = recommendation === "PURSUE" ? "Review the requirements and prepare your submission plan." : recommendation === "DO NOT PURSUE" ? "Confirm the critical issues before spending bid resources on this opportunity." : "Review the risks and eligibility requirements before making a go / no-go decision.";
+
+  // Do not use a React hook here. This component intentionally returns early
+  // while loading, so derived values must remain ordinary calculations to
+  // avoid changing the number/order of hooks between renders.
+  const topReasons = (recommendation === "PURSUE"
+    ? strengths
+    : [...redFlags, ...risks, ...hardDisqualifiers]
+  ).filter(Boolean).slice(0, 4);
+
+  const nextAction = recommendation === "PURSUE"
+    ? "Review the requirements and prepare your submission plan."
+    : recommendation === "DO NOT PURSUE"
+      ? "Confirm the critical issues before spending bid resources on this opportunity."
+      : "Review the risks and eligibility requirements before making a go / no-go decision.";
 
   return (
     <main className="results-page">
@@ -199,7 +251,12 @@ export default function ResultsClient() {
         <section className="snapshot-card">
           <div className="snapshot-heading"><div><span className="mini-label">AT A GLANCE</span><h2>Project snapshot</h2></div></div>
           <div className="facts-grid compact">
-            <div><span>CLIENT</span><strong>{analysis.client_name || "Not stated"}</strong></div><div><span>LOCATION</span><strong>{analysis.location || "Not stated"}</strong></div><div><span>PROJECT TYPE</span><strong>{analysis.project_type || "Not stated"}</strong></div><div><span>DEADLINE</span><strong>{analysis.deadline ? formatDate(analysis.deadline) : "Not stated"}</strong></div><div><span>ESTIMATED BUDGET</span><strong>{asString(raw.estimatedBudget, "Not stated")}</strong></div><div><span>CONFIDENCE</span><strong>{asString(raw.confidence, "MEDIUM")}</strong></div>
+            <div><span>CLIENT</span><strong>{analysis.client_name || "Not stated"}</strong></div>
+            <div><span>LOCATION</span><strong>{analysis.location || "Not stated"}</strong></div>
+            <div><span>PROJECT TYPE</span><strong>{analysis.project_type || "Not stated"}</strong></div>
+            <div><span>DEADLINE</span><strong>{analysis.deadline ? formatDate(analysis.deadline) : "Not stated"}</strong></div>
+            <div><span>ESTIMATED BUDGET</span><strong>{asString(raw.estimatedBudget, "Not stated")}</strong></div>
+            <div><span>CONFIDENCE</span><strong>{asString(raw.confidence, "MEDIUM")}</strong></div>
           </div>
         </section>
 
@@ -210,7 +267,7 @@ export default function ResultsClient() {
         <div className="accordion-stack">
           <AccordionSection title="Why this could be a good opportunity" count={strengths.length}><BulletList items={strengths} empty="No specific strengths were identified in the document." /></AccordionSection>
           <AccordionSection title="Risks to review" count={risks.length}><BulletList items={risks} empty="No major risks were identified from the available information." /></AccordionSection>
-          {scoreBreakdown.length > 0 && <AccordionSection title="Why this score?" eyebrow="DECISION SUPPORT" count={scoreBreakdown.length}><div className="score-breakdown">{scoreBreakdown.map((item, i) => { const factorScore = Math.max(0, Math.min(100, Number(item.score ?? 0))); return <div className="score-factor" key={i}><div className="score-factor-top"><strong>{asString(item.factor, "Factor")}</strong><span>{factorScore}/100 · {asString(item.weight, "0")}% weight</span></div><div className="score-bar"><span style={{ width: `${factorScore}%` }} /></div><p>{asString(item.reason, "No explanation provided.")}</p></div>; })}</div></AccordionSection>}
+          {scoreBreakdown.length > 0 && <AccordionSection title="Why this score?" eyebrow="DECISION SUPPORT" count={scoreBreakdown.length}><div className="score-breakdown">{scoreBreakdown.map((item, i) => { const numericScore = Number(item.score ?? 0); const factorScore = Number.isFinite(numericScore) ? Math.max(0, Math.min(100, numericScore)) : 0; return <div className="score-factor" key={i}><div className="score-factor-top"><strong>{asString(item.factor, "Factor")}</strong><span>{factorScore}/100 · {asString(item.weight, "0")}% weight</span></div><div className="score-bar"><span style={{ width: `${factorScore}%` }} /></div><p>{asString(item.reason, "No explanation provided.")}</p></div>; })}</div></AccordionSection>}
           <AccordionSection title="Eligibility & firm requirements" count={eligibility.length || requirements.length}>
             {eligibility.length > 0 && <BulletList items={eligibility} />}
             {requirements.length > 0 && <div className="requirement-list">{requirements.map((item, i) => { const mandatory = item.mandatory === true || item.mandatory === "true"; return <div className="requirement" key={i}><div><strong>{asString(item.item ?? item.name ?? item.title, "Requirement")}</strong>{asString(item.details) && <p>{asString(item.details)}</p>}</div><span className={mandatory ? "mandatory" : "preferred"}>{mandatory ? "MANDATORY" : "REVIEW"}</span></div>; })}</div>}
