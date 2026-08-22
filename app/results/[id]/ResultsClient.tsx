@@ -243,6 +243,17 @@ export default function ResultsClient() {
           <div className="decision-action"><span>NEXT STEP</span><strong>{nextAction}</strong></div>
         </section>
 
+        <section className="proposal-cta">
+          <div>
+            <span className="mini-label">TURN INTELLIGENCE INTO ACTION</span>
+            <h2>Need ArchBid to write the proposal for you?</h2>
+            <p>Get a tailored, client-ready first draft based on this RFP, including the cover letter, project approach, scope, evaluation criteria and compliance items.</p>
+          </div>
+          <Link className="proposal-cta-button" href={`/proposal/${analysis.id}`}>
+            Generate my proposal · $49 →
+          </Link>
+        </section>
+
         <section className="attention-grid">
           {topReasons.length > 0 && <div className="quick-card"><div className="quick-card-heading"><span className="quick-icon">!</span><div><span className="mini-label">WHY THIS DECISION</span><h2>Top factors</h2></div></div><BulletList items={topReasons} /></div>}
           {redFlags.length > 0 && <div className="quick-card warning"><div className="quick-card-heading"><span className="quick-icon">⚠</span><div><span className="mini-label">ATTENTION</span><h2>Critical issues</h2></div></div><BulletList items={redFlags.slice(0, 4)} />{redFlags.length > 4 && <p className="more-note">+ {redFlags.length - 4} more in the detailed report</p>}</div>}
