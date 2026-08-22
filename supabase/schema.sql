@@ -99,7 +99,6 @@ create policy "Users can delete analyses for their RFPs"
   on public.rfp_analyses for delete
   using (exists (select 1 from public.rfps where rfps.id = rfp_analyses.rfp_id and rfps.user_id = auth.uid()));
 
--- Automatically create a firm record for each new user.
 create or replace function public.handle_new_user()
 returns trigger
 language plpgsql
@@ -118,7 +117,6 @@ create trigger on_auth_user_created
 after insert on auth.users
 for each row execute procedure public.handle_new_user();
 
--- Private storage bucket for RFP documents.
 insert into storage.buckets (id, name, public)
 values ('rfps', 'rfps', false)
 on conflict (id) do nothing;
@@ -138,8 +136,7 @@ on storage.objects for delete
 to authenticated
 using (bucket_id = 'rfps' and (storage.foldername(name))[1] = auth.uid()::text);
 
--- Paid proposal add-on.
--- One successful purchase unlocks one client-ready proposal for one analyzed RFP.
+-- Paid proposal add-on. Launch price: $19 one-time.
 create table if not exists public.proposal_purchases (
   id uuid primary key default gen_random_uuid(),
   user_id uuid not null references auth.users(id) on delete cascade,
@@ -147,11 +144,17 @@ create table if not exists public.proposal_purchases (
   analysis_id uuid not null unique references public.rfp_analyses(id) on delete cascade,
   stripe_checkout_session_id text unique,
   stripe_payment_intent_id text,
-  amount_cents integer not null default 4900,
+  lemon_squeezy_checkout_session_id text,
+  lemon_squeezy_order_id text,
+  amount_cents integer not null default 1900,
   currency text not null default 'usd',
   status text not null default 'paid' check (status in ('paid','refunded','failed')),
   created_at timestamptz not null default now()
 );
+
+create unique index if not exists proposal_purchases_lemon_order_id_key
+  on public.proposal_purchases (lemon_squeezy_order_id)
+  where lemon_squeezy_order_id is not null;
 
 create table if not exists public.proposals (
   id uuid primary key default gen_random_uuid(),
