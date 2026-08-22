@@ -137,3 +137,48 @@ create policy "Users can delete their own RFP files"
 on storage.objects for delete
 to authenticated
 using (bucket_id = 'rfps' and (storage.foldername(name))[1] = auth.uid()::text);
+
+-- Paid proposal add-on.
+-- One successful purchase unlocks one client-ready proposal for one analyzed RFP.
+create table if not exists public.proposal_purchases (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null references auth.users(id) on delete cascade,
+  rfp_id uuid not null references public.rfps(id) on delete cascade,
+  analysis_id uuid not null unique references public.rfp_analyses(id) on delete cascade,
+  stripe_checkout_session_id text unique,
+  stripe_payment_intent_id text,
+  amount_cents integer not null default 4900,
+  currency text not null default 'usd',
+  status text not null default 'paid' check (status in ('paid','refunded','failed')),
+  created_at timestamptz not null default now()
+);
+
+create table if not exists public.proposals (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null references auth.users(id) on delete cascade,
+  rfp_id uuid not null references public.rfps(id) on delete cascade,
+  analysis_id uuid not null unique references public.rfp_analyses(id) on delete cascade,
+  content jsonb not null default '{}'::jsonb,
+  status text not null default 'draft' check (status in ('draft','generating','ready','failed')),
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+alter table public.proposal_purchases enable row level security;
+alter table public.proposals enable row level security;
+
+create policy "Users can view their proposal purchases"
+  on public.proposal_purchases for select
+  using (auth.uid() = user_id);
+
+create policy "Users can view their proposals"
+  on public.proposals for select
+  using (auth.uid() = user_id);
+
+create policy "Users can create their proposals"
+  on public.proposals for insert
+  with check (auth.uid() = user_id);
+
+create policy "Users can update their proposals"
+  on public.proposals for update
+  using (auth.uid() = user_id);
