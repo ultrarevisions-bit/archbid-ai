@@ -53,24 +53,8 @@ export default function ProposalPage() {
           return;
         }
 
-        const params = new URLSearchParams(window.location.search);
-        const sessionId = params.get("session_id");
-        if (sessionId) {
-          setMessage("Verifying your payment…");
-          const response = await fetch("/api/proposal/confirm", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ analysisId, sessionId })
-          });
-          const result = await response.json().catch(() => ({}));
-          if (!response.ok || result.paid !== true) {
-            setMessage(result.error || "Payment verification is still processing. Refresh in a moment.");
-          } else {
-            setPaid(true);
-            window.history.replaceState({}, "", `/proposal/${analysisId}`);
-            setMessage("Payment confirmed. Your proposal is ready to generate.");
-          }
-        }
+        const checkoutReturned = new URLSearchParams(window.location.search).get("checkout") === "success";
+        if (checkoutReturned) setMessage("Payment received. Confirming your proposal access…");
 
         const { data: purchase } = await supabase
           .from("proposal_purchases")
@@ -80,7 +64,29 @@ export default function ProposalPage() {
           .eq("status", "paid")
           .maybeSingle();
 
-        if (purchase) setPaid(true);
+        if (purchase) {
+          setPaid(true);
+          window.history.replaceState({}, "", `/proposal/${analysisId}`);
+        } else if (checkoutReturned) {
+          // Lemon Squeezy confirms payment to the app through its signed webhook.
+          // Give the webhook a short window to arrive, then leave a retry message.
+          for (let attempt = 0; attempt < 10 && !cancelled; attempt++) {
+            await new Promise(resolve => setTimeout(resolve, 1500));
+            const { data: confirmed } = await supabase
+              .from("proposal_purchases")
+              .select("id")
+              .eq("analysis_id", analysisId)
+              .eq("user_id", user.id)
+              .eq("status", "paid")
+              .maybeSingle();
+            if (confirmed) {
+              setPaid(true);
+              window.history.replaceState({}, "", `/proposal/${analysisId}`);
+              setMessage("Payment confirmed. Your proposal is ready to generate.");
+              break;
+            }
+          }
+        }
 
         const { data: savedProposal } = await supabase
           .from("proposals")
@@ -91,6 +97,22 @@ export default function ProposalPage() {
 
         if (savedProposal?.status === "ready" && savedProposal.content) {
           setProposal({ id: savedProposal.id, ...(savedProposal.content as Proposal) });
+        }
+
+        if (!cancelled && checkoutReturned && !paid && !purchase) {
+          const { data: finalCheck } = await supabase
+            .from("proposal_purchases")
+            .select("id")
+            .eq("analysis_id", analysisId)
+            .eq("user_id", user.id)
+            .eq("status", "paid")
+            .maybeSingle();
+          if (finalCheck) {
+            setPaid(true);
+            setMessage("Payment confirmed. Your proposal is ready to generate.");
+          } else {
+            setMessage("Your payment was received, but access is still being confirmed. Please refresh in a few seconds.");
+          }
         }
       } catch (error) {
         if (!cancelled) setMessage(error instanceof Error ? error.message : "We could not load the proposal workspace.");
@@ -159,11 +181,11 @@ export default function ProposalPage() {
             <h1>Turn this RFP analysis into a client-ready proposal draft.</h1>
             <p>ArchBid will use the RFP intelligence, evaluation criteria, requirements and your firm profile to create a tailored first draft. It will never invent credentials or project experience.</p>
             <div className="upgrade-grid">
-              <div><strong>$49</strong><span>one-time per proposal</span></div>
+              <div><strong>$19</strong><span>one-time per proposal</span></div>
               <ul><li>Project-specific cover letter</li><li>Tailored approach and scope</li><li>Evaluation-criteria alignment</li><li>Compliance and submission checklist</li><li>Placeholders for missing firm details</li></ul>
             </div>
-            <button className="primary-button" onClick={buyProposal} disabled={busy}>{busy ? "Opening secure checkout…" : "Get my proposal draft — $49 →"}</button>
-            <small>Secure payment is handled by Stripe. Your RFP report remains available even if you decide not to purchase.</small>
+            <button className="primary-button" onClick={buyProposal} disabled={busy}>{busy ? "Opening secure checkout…" : "Get my proposal draft — $19 →"}</button>
+            <small>Secure payment is handled by Lemon Squeezy. Your RFP report remains available even if you decide not to purchase.</small>
           </section>
         )}
 
