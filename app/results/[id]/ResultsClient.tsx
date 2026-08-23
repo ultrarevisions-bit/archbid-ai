@@ -210,9 +210,6 @@ export default function ResultsClient() {
   const bidEffort = stringList(raw.bidEffort);
   const scoreBreakdown = objectList(raw.scoreBreakdown);
 
-  // Do not use a React hook here. This component intentionally returns early
-  // while loading, so derived values must remain ordinary calculations to
-  // avoid changing the number/order of hooks between renders.
   const topReasons = (recommendation === "PURSUE"
     ? strengths
     : [...redFlags, ...risks, ...hardDisqualifiers]
@@ -250,7 +247,7 @@ export default function ResultsClient() {
             <p>Get a tailored, client-ready first draft based on this RFP, including the cover letter, project approach, scope, evaluation criteria and compliance items.</p>
           </div>
           <Link className="proposal-cta-button" href={`/proposal/${analysis.id}`}>
-            Generate my proposal · $49 →
+            Generate my proposal · $19 →
           </Link>
         </section>
 
