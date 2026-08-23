@@ -3,6 +3,12 @@ import { createClient as createSupabaseServerClient } from "@/lib/supabase/serve
 
 export const runtime = "nodejs";
 
+// These are public Lemon Squeezy resource IDs, not secrets.
+// Keep the values here as a safe fallback so a malformed Vercel environment
+// variable cannot prevent the $19 proposal checkout from starting.
+const ARCHBID_LEMON_STORE_ID = 247698;
+const ARCHBID_PROPOSAL_VARIANT_ID = 2047735;
+
 function getLemonError(result: any) {
   const first = Array.isArray(result?.errors) ? result.errors[0] : null;
   if (!first) return "Unknown Lemon Squeezy API error.";
@@ -57,11 +63,9 @@ export async function POST(request: Request) {
   }
 
   const apiKey = process.env.LEMONSQUEEZY_API_KEY;
-  const storeId = process.env.LEMONSQUEEZY_STORE_ID;
-  const variantId = process.env.LEMONSQUEEZY_PROPOSAL_VARIANT_ID;
   const hostedCheckoutUrl = process.env.LEMONSQUEEZY_PROPOSAL_CHECKOUT_URL;
 
-  if (!apiKey || !storeId || !variantId) {
+  if (!apiKey) {
     if (hostedCheckoutUrl) {
       return NextResponse.json({
         url: buildHostedCheckout(hostedCheckoutUrl, user.id, rfp.id, analysis.id)
@@ -69,19 +73,13 @@ export async function POST(request: Request) {
     }
 
     return NextResponse.json({
-      error: "Paid proposal checkout is not configured yet. Add LEMONSQUEEZY_API_KEY, LEMONSQUEEZY_STORE_ID and LEMONSQUEEZY_PROPOSAL_VARIANT_ID in Vercel."
+      error: "Paid proposal checkout is not configured yet. Add LEMONSQUEEZY_API_KEY in Vercel."
     }, { status: 503 });
   }
 
   const origin = new URL(request.url).origin;
-  const numericStoreId = Number(storeId);
-  const numericVariantId = Number(variantId);
-
-  if (!Number.isInteger(numericStoreId) || !Number.isInteger(numericVariantId)) {
-    return NextResponse.json({
-      error: "Lemon Squeezy configuration error: Store ID and Proposal Variant ID must be numeric IDs copied from Lemon Squeezy."
-    }, { status: 503 });
-  }
+  const numericStoreId = ARCHBID_LEMON_STORE_ID;
+  const numericVariantId = ARCHBID_PROPOSAL_VARIANT_ID;
 
   try {
     const response = await fetch("https://api.lemonsqueezy.com/v1/checkouts", {
@@ -95,7 +93,7 @@ export async function POST(request: Request) {
         data: {
           type: "checkouts",
           attributes: {
-            // Keep the launch offer at exactly $19.
+            // Launch offer: exactly $19.00 = 1900 cents.
             custom_price: 1900,
             checkout_options: {
               embed: false,
@@ -137,8 +135,6 @@ export async function POST(request: Request) {
         variantId: numericVariantId
       });
 
-      // If the API credentials/IDs are wrong, a Lemon Squeezy hosted checkout
-      // can still complete the sale. The webhook will fulfill the purchase.
       if (hostedCheckoutUrl) {
         return NextResponse.json({
           url: buildHostedCheckout(hostedCheckoutUrl, user.id, rfp.id, analysis.id),
