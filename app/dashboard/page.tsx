@@ -42,9 +42,6 @@ export default function Dashboard() {
   async function refreshRfpStatuses(records: RfpRecord[]) {
     if (!records.length) return records;
 
-    // Ask the server to advance any background OpenAI jobs. This is intentionally
-    // separate from the browser request that started the job, so leaving the page
-    // does not cancel the AI analysis.
     const pending = records.filter(record => record.status === "analyzing" && !record.analysis_id);
     await Promise.all(pending.map(async record => {
       try {
@@ -129,7 +126,7 @@ export default function Dashboard() {
           setPendingUpload(false);
           const latest = records[0];
           if (latest.analysis_id) {
-            setStatus("Your latest RFP analysis is complete. You can view the report below.");
+            setStatus("Your latest RFP analysis is complete. You can view the report or generate a proposal.");
           } else if (latest.status === "analyzing") {
             setStatus("Your RFP is saved and is being analyzed. You can leave this page and come back later.");
           } else if (latest.status === "failed") {
@@ -160,8 +157,6 @@ export default function Dashboard() {
     return () => { cancelled = true; };
   }, []);
 
-  // Poll the server-side background job. There is deliberately NO elapsed-time
-  // counter. The database status is the source of truth.
   useEffect(() => {
     if (loadingUser || !recentRfPs.some(item => item.status === "analyzing" && !item.analysis_id)) return;
 
@@ -182,7 +177,7 @@ export default function Dashboard() {
       updated.forEach(item => {
         if (item.analysis_id || item.status === "failed") {
           setRfp(current => current?.id === item.id ? item : current);
-          if (item.analysis_id) setStatus("Your latest RFP analysis is complete. You can view the report below.");
+          if (item.analysis_id) setStatus("Your latest RFP analysis is complete. You can view the report or generate a proposal.");
           if (item.status === "failed") setStatus("The RFP analysis failed. Your document is safe and can be retried.");
         }
       });
@@ -254,8 +249,6 @@ export default function Dashboard() {
   }
 
   async function startAnalysis(rfpRecord: RfpRecord) {
-    // This request only starts the OpenAI background job. It no longer waits for the
-    // model to finish. The dashboard polls /api/analyze/status separately.
     fetch("/api/analyze", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -327,6 +320,14 @@ export default function Dashboard() {
     window.location.href = `/results/${item.analysis_id}`;
   }
 
+  function openProposal(item: RfpRecord) {
+    if (!item.analysis_id) {
+      setStatus("The proposal option becomes available when this RFP analysis is complete.");
+      return;
+    }
+    window.location.href = `/proposal/${item.analysis_id}`;
+  }
+
   if (loadingUser) return <main className="dashboard loading-screen">Loading your ArchBid workspace…</main>;
 
   const displayName = file?.name || rfp?.file_name || "Drop your RFP here";
@@ -378,13 +379,16 @@ export default function Dashboard() {
             {recentRfPs.map(item => (
               <div className="recent-item" key={item.id}>
                 <span>{item.file_name}</span>
-                <span>
+                <span className="recent-actions">
                   {item.analysis_id ? (
-                    <button type="button" onClick={() => openSavedAnalysis(item)}>Completed · View report →</button>
+                    <>
+                      <button type="button" className="view-report-button" onClick={() => openSavedAnalysis(item)}>Completed · View report →</button>
+                      <button type="button" className="proposal-button" onClick={() => openProposal(item)}>Generate proposal · $19 →</button>
+                    </>
                   ) : item.status === "analyzing" ? (
-                    <span>Analyzing…</span>
+                    <span className="status-analyzing">Analyzing…</span>
                   ) : item.status === "failed" ? (
-                    <button type="button" onClick={() => retryAnalysis(item)}>Analysis failed · Retry →</button>
+                    <button type="button" className="retry-button" onClick={() => retryAnalysis(item)}>Analysis failed · Retry →</button>
                   ) : (
                     <span>{item.status || "Saved"}</span>
                   )}
