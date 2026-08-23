@@ -10,6 +10,14 @@ function getLemonError(result: any) {
   return detail ? String(detail).slice(0, 500) : "Lemon Squeezy rejected the checkout request.";
 }
 
+function buildHostedCheckout(url: string, userId: string, rfpId: string, analysisId: string) {
+  const checkout = new URL(url);
+  checkout.searchParams.set("checkout[custom][user_id]", userId);
+  checkout.searchParams.set("checkout[custom][rfp_id]", rfpId);
+  checkout.searchParams.set("checkout[custom][analysis_id]", analysisId);
+  return checkout.toString();
+}
+
 export async function POST(request: Request) {
   const supabase = await createSupabaseServerClient();
   const { data: { user } } = await supabase.auth.getUser();
@@ -54,15 +62,10 @@ export async function POST(request: Request) {
   const hostedCheckoutUrl = process.env.LEMONSQUEEZY_PROPOSAL_CHECKOUT_URL;
 
   if (!apiKey || !storeId || !variantId) {
-    // A hosted checkout URL is a safe fallback if the API integration is not configured.
-    // It can be copied from Lemon Squeezy's Product > Share panel.
     if (hostedCheckoutUrl) {
-      const checkout = new URL(hostedCheckoutUrl);
-      checkout.searchParams.set("checkout[custom][user_id]", user.id);
-      checkout.searchParams.set("checkout[custom][rfp_id]", rfp.id);
-      checkout.searchParams.set("checkout[custom][analysis_id]", analysis.id);
-      checkout.searchParams.set("checkout[success_url]", `${new URL(request.url).origin}/proposal/${analysis.id}?checkout=success`);
-      return NextResponse.json({ url: checkout.toString() });
+      return NextResponse.json({
+        url: buildHostedCheckout(hostedCheckoutUrl, user.id, rfp.id, analysis.id)
+      });
     }
 
     return NextResponse.json({
@@ -92,7 +95,7 @@ export async function POST(request: Request) {
         data: {
           type: "checkouts",
           attributes: {
-            // Keep the offer at the agreed launch price of $19.
+            // Keep the launch offer at exactly $19.
             custom_price: 1900,
             checkout_options: {
               embed: false,
@@ -126,14 +129,25 @@ export async function POST(request: Request) {
     const result = await response.json().catch(() => ({}));
 
     if (!response.ok) {
+      const lemonError = getLemonError(result);
       console.error("ARCHBID LEMON SQUEEZY CHECKOUT ERROR:", {
         status: response.status,
         result,
         storeId: numericStoreId,
         variantId: numericVariantId
       });
+
+      // If the API credentials/IDs are wrong, a Lemon Squeezy hosted checkout
+      // can still complete the sale. The webhook will fulfill the purchase.
+      if (hostedCheckoutUrl) {
+        return NextResponse.json({
+          url: buildHostedCheckout(hostedCheckoutUrl, user.id, rfp.id, analysis.id),
+          fallback: true
+        });
+      }
+
       return NextResponse.json({
-        error: `Lemon Squeezy could not create the checkout: ${getLemonError(result)}`
+        error: `Lemon Squeezy could not create the checkout: ${lemonError}`
       }, { status: 502 });
     }
 
@@ -147,6 +161,14 @@ export async function POST(request: Request) {
     return NextResponse.json({ url: checkoutUrl, checkoutId });
   } catch (error) {
     console.error("ARCHBID LEMON SQUEEZY CHECKOUT EXCEPTION:", error);
+
+    if (hostedCheckoutUrl) {
+      return NextResponse.json({
+        url: buildHostedCheckout(hostedCheckoutUrl, user.id, rfp.id, analysis.id),
+        fallback: true
+      });
+    }
+
     return NextResponse.json({ error: "Checkout could not be started. Please try again." }, { status: 500 });
   }
 }
