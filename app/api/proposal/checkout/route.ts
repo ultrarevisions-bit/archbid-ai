@@ -3,11 +3,12 @@ import { createClient as createSupabaseServerClient } from "@/lib/supabase/serve
 
 export const runtime = "nodejs";
 
-// These are public Lemon Squeezy resource IDs, not secrets.
-// Keep the values here as a safe fallback so a malformed Vercel environment
-// variable cannot prevent the $19 proposal checkout from starting.
+// Lemon Squeezy resource IDs are public identifiers, not secrets.
+// Keep live values as safe fallbacks, while allowing Vercel environment
+// variables to switch the same code between Live and Test Mode.
 const ARCHBID_LEMON_STORE_ID = 247698;
-const ARCHBID_PROPOSAL_VARIANT_ID = 2047735;
+const ARCHBID_LIVE_PROPOSAL_VARIANT_ID = 2047735;
+const ARCHBID_TEST_PROPOSAL_VARIANT_ID = 2052480;
 
 function getLemonError(result: any) {
   const first = Array.isArray(result?.errors) ? result.errors[0] : null;
@@ -64,6 +65,7 @@ export async function POST(request: Request) {
 
   const apiKey = process.env.LEMONSQUEEZY_API_KEY;
   const hostedCheckoutUrl = process.env.LEMONSQUEEZY_PROPOSAL_CHECKOUT_URL;
+  const testMode = String(process.env.LEMONSQUEEZY_TEST_MODE || "").toLowerCase() === "true";
 
   if (!apiKey) {
     if (hostedCheckoutUrl) {
@@ -78,8 +80,20 @@ export async function POST(request: Request) {
   }
 
   const origin = new URL(request.url).origin;
-  const numericStoreId = ARCHBID_LEMON_STORE_ID;
-  const numericVariantId = ARCHBID_PROPOSAL_VARIANT_ID;
+  const configuredStoreId = process.env.LEMONSQUEEZY_STORE_ID;
+  const configuredVariantId = process.env.LEMONSQUEEZY_PROPOSAL_VARIANT_ID;
+
+  const numericStoreId = Number(configuredStoreId || ARCHBID_LEMON_STORE_ID);
+  const numericVariantId = Number(
+    configuredVariantId ||
+    (testMode ? ARCHBID_TEST_PROPOSAL_VARIANT_ID : ARCHBID_LIVE_PROPOSAL_VARIANT_ID)
+  );
+
+  if (!Number.isInteger(numericStoreId) || !Number.isInteger(numericVariantId)) {
+    return NextResponse.json({
+      error: "Lemon Squeezy configuration error: Store ID and Proposal Variant ID must be numeric IDs copied from Lemon Squeezy."
+    }, { status: 500 });
+  }
 
   try {
     const response = await fetch("https://api.lemonsqueezy.com/v1/checkouts", {
@@ -95,6 +109,7 @@ export async function POST(request: Request) {
           attributes: {
             // Launch offer: exactly $19.00 = 1900 cents.
             custom_price: 1900,
+            test_mode: testMode,
             checkout_options: {
               embed: false,
               media: true,
@@ -132,7 +147,8 @@ export async function POST(request: Request) {
         status: response.status,
         result,
         storeId: numericStoreId,
-        variantId: numericVariantId
+        variantId: numericVariantId,
+        testMode
       });
 
       if (hostedCheckoutUrl) {
