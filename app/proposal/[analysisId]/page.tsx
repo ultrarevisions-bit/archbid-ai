@@ -68,8 +68,6 @@ export default function ProposalPage() {
           setPaid(true);
           window.history.replaceState({}, "", `/proposal/${analysisId}`);
         } else if (checkoutReturned) {
-          // Lemon Squeezy confirms payment to the app through its signed webhook.
-          // Give the webhook a short window to arrive, then leave a retry message.
           for (let attempt = 0; attempt < 10 && !cancelled; attempt++) {
             await new Promise(resolve => setTimeout(resolve, 1500));
             const { data: confirmed } = await supabase
@@ -128,6 +126,11 @@ export default function ProposalPage() {
   async function buyProposal() {
     setBusy(true);
     setMessage("");
+
+    // Open the new tab immediately from the user's click so browser popup
+    // blockers are less likely to prevent the Lemon Squeezy checkout.
+    const checkoutTab = window.open("about:blank", "_blank");
+
     try {
       const response = await fetch("/api/proposal/checkout", {
         method: "POST",
@@ -136,8 +139,15 @@ export default function ProposalPage() {
       });
       const result = await response.json().catch(() => ({}));
       if (!response.ok || !result.url) throw new Error(result.error || "Checkout could not be started.");
-      window.location.href = result.url;
+
+      if (checkoutTab && !checkoutTab.closed) {
+        checkoutTab.location.href = result.url;
+      } else {
+        // Fallback if the browser blocked the new tab.
+        window.location.href = result.url;
+      }
     } catch (error) {
+      if (checkoutTab && !checkoutTab.closed) checkoutTab.close();
       setMessage(error instanceof Error ? error.message : "Checkout could not be started.");
       setBusy(false);
     }
