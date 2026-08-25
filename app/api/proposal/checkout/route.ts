@@ -1,11 +1,10 @@
 import { NextResponse } from "next/server";
 import { createClient as createSupabaseServerClient } from "@/lib/supabase/server";
+import { createAdminClient } from "@/lib/supabase/admin";
 
 export const runtime = "nodejs";
 
 // Lemon Squeezy resource IDs are public identifiers, not secrets.
-// Keep live values as safe fallbacks, while allowing Vercel environment
-// variables to switch the same code between Live and Test Mode.
 const ARCHBID_LEMON_STORE_ID = 247698;
 const ARCHBID_LIVE_PROPOSAL_VARIANT_ID = 2047735;
 const ARCHBID_TEST_PROPOSAL_VARIANT_ID = 2052480;
@@ -107,7 +106,6 @@ export async function POST(request: Request) {
         data: {
           type: "checkouts",
           attributes: {
-            // Launch offer: exactly $19.00 = 1900 cents.
             custom_price: 1900,
             test_mode: testMode,
             checkout_options: {
@@ -168,6 +166,29 @@ export async function POST(request: Request) {
     if (!checkoutUrl || !checkoutId) {
       console.error("ARCHBID LEMON SQUEEZY INVALID CHECKOUT RESPONSE:", result);
       return NextResponse.json({ error: "Lemon Squeezy returned an invalid checkout." }, { status: 502 });
+    }
+
+    // Record the checkout before the customer leaves ArchBid. This is a
+    // fallback for the confirmation page if the Lemon Squeezy webhook is
+    // delayed or unavailable. The webhook remains the primary fulfillment path.
+    try {
+      const admin = createAdminClient();
+      const { error: pendingError } = await admin.from("proposal_purchases").upsert({
+        user_id: user.id,
+        rfp_id: rfp.id,
+        analysis_id: analysis.id,
+        lemon_squeezy_checkout_session_id: String(checkoutId),
+        lemon_squeezy_order_id: null,
+        amount_cents: 1900,
+        currency: "usd",
+        status: "failed"
+      }, { onConflict: "analysis_id" });
+
+      if (pendingError) {
+        console.error("ARCHBID LEMON SQUEEZY: could not save checkout reference", pendingError);
+      }
+    } catch (pendingError) {
+      console.error("ARCHBID LEMON SQUEEZY: checkout reference save exception", pendingError);
     }
 
     return NextResponse.json({ url: checkoutUrl, checkoutId });
