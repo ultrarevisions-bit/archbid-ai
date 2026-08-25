@@ -8,6 +8,18 @@ const ARCHBID_LEMON_STORE_ID = 247698;
 const ARCHBID_LIVE_PROPOSAL_VARIANT_ID = 2047735;
 const ARCHBID_TEST_PROPOSAL_VARIANT_ID = 2052480;
 
+function normalizeEmail(value: unknown) {
+  return String(value || "").trim().toLowerCase();
+}
+
+function toCents(value: unknown) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return 0;
+  // Lemon Squeezy documents order totals in the currency's smallest unit.
+  // Keep this tolerant of a decimal amount in case an API response is formatted differently.
+  return number < 100 ? Math.round(number * 100) : Math.round(number);
+}
+
 export async function POST(request: Request) {
   const supabase = await createSupabaseServerClient();
   const { data: { user } } = await supabase.auth.getUser();
@@ -19,7 +31,27 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "Missing analysis ID." }, { status: 400 });
   }
 
-  const { data: existingPaid, error: paidLookupError } = await supabase
+  const admin = createAdminClient();
+
+  // Verify that this RFP analysis actually belongs to the signed-in user.
+  const { data: analysis, error: analysisError } = await admin
+    .from("rfp_analyses")
+    .select("id, rfp_id")
+    .eq("id", analysisId)
+    .maybeSingle();
+
+  if (analysisError || !analysis) return NextResponse.json({ paid: false });
+
+  const { data: ownedRfp, error: ownershipError } = await admin
+    .from("rfps")
+    .select("id")
+    .eq("id", analysis.rfp_id)
+    .eq("user_id", user.id)
+    .maybeSingle();
+
+  if (ownershipError || !ownedRfp) return NextResponse.json({ paid: false });
+
+  const { data: existingPaid, error: paidLookupError } = await admin
     .from("proposal_purchases")
     .select("id")
     .eq("analysis_id", analysisId)
@@ -33,15 +65,6 @@ export async function POST(request: Request) {
   }
 
   if (existingPaid) return NextResponse.json({ paid: true, source: "database" });
-
-  const admin = createAdminClient();
-  const { data: analysis, error: analysisError } = await admin
-    .from("rfp_analyses")
-    .select("id, rfp_id")
-    .eq("id", analysisId)
-    .maybeSingle();
-
-  if (analysisError || !analysis) return NextResponse.json({ paid: false });
 
   const { data: pendingPurchase, error: pendingError } = await admin
     .from("proposal_purchases")
@@ -70,51 +93,79 @@ export async function POST(request: Request) {
   }
 
   try {
-    // Webhooks remain the primary fulfillment mechanism. This API check is a
-    // recovery path for the short period after checkout when the webhook is
-    // delayed or has not yet reached the application.
+    const headers = {
+      Accept: "application/vnd.api+json",
+      Authorization: `Bearer ${apiKey}`
+    };
+
+    // Do not rely on Lemon Squeezy's email filter here. We fetch recent orders
+    // for the store and match the email locally. This makes the confirmation
+    // path resilient to URL/filter encoding differences while still requiring
+    // the authenticated ArchBid user's email, paid status and exact variant.
     const params = new URLSearchParams();
-    params.set("filter[user_email]", user.email);
     params.set("filter[store_id]", String(storeId));
-    params.set("page[size]", "50");
+    params.set("page[size]", "100");
     params.set("sort", "-createdAt");
 
     const response = await fetch(`https://api.lemonsqueezy.com/v1/orders?${params.toString()}`, {
-      headers: {
-        Accept: "application/vnd.api+json",
-        Authorization: `Bearer ${apiKey}`
-      },
+      headers,
       cache: "no-store"
     });
 
     const result = await response.json().catch(() => ({}));
     if (!response.ok) {
       console.error("ARCHBID LEMON SQUEEZY ORDER VERIFICATION ERROR:", response.status, result);
-      return NextResponse.json({ paid: false });
+      return NextResponse.json({ paid: false, reason: "lemonsqueezy_api_error" });
     }
 
     const pendingCreatedAt = pendingPurchase?.created_at ? Date.parse(pendingPurchase.created_at) : NaN;
+    // Allow a generous window because the user may complete checkout several
+    // minutes after the checkout record is created.
     const minimumCreatedAt = Number.isFinite(pendingCreatedAt)
-      ? pendingCreatedAt - 2 * 60 * 1000
-      : Date.now() - 30 * 60 * 1000;
+      ? pendingCreatedAt - 10 * 60 * 1000
+      : Date.now() - 60 * 60 * 1000;
 
-    const matchingOrder = (result?.data || []).find((item: any) => {
+    const expectedEmail = normalizeEmail(user.email);
+    const orders = Array.isArray(result?.data) ? result.data : [];
+
+    const matchingOrder = orders.find((item: any) => {
       const attributes = item?.attributes || {};
       const orderVariantId = Number(attributes?.first_order_item?.variant_id);
       const createdAt = Date.parse(attributes?.created_at || "");
+      const orderEmail = normalizeEmail(attributes?.user_email);
+      const amountCents = toCents(attributes?.total);
 
       return (
         String(attributes?.store_id) === String(storeId) &&
-        String(attributes?.user_email || "").toLowerCase() === String(user.email).toLowerCase() &&
+        orderEmail === expectedEmail &&
         attributes?.status === "paid" &&
         attributes?.test_mode === testMode &&
         orderVariantId === variantId &&
-        Number(attributes?.total) >= 1900 &&
+        amountCents >= 1900 &&
         (!Number.isFinite(createdAt) || createdAt >= minimumCreatedAt)
       );
     });
 
-    if (!matchingOrder) return NextResponse.json({ paid: false });
+    if (!matchingOrder) {
+      const recent = orders.slice(0, 5).map((item: any) => ({
+        id: item?.id,
+        email: normalizeEmail(item?.attributes?.user_email),
+        status: item?.attributes?.status,
+        variantId: item?.attributes?.first_order_item?.variant_id,
+        testMode: item?.attributes?.test_mode,
+        createdAt: item?.attributes?.created_at
+      }));
+      console.warn("ARCHBID LEMON SQUEEZY: no matching paid order found", {
+        analysisId,
+        expectedEmail,
+        storeId,
+        variantId,
+        testMode,
+        pendingCheckoutId: pendingPurchase?.lemon_squeezy_checkout_session_id,
+        recent
+      });
+      return NextResponse.json({ paid: false, reason: "no_matching_order" });
+    }
 
     const attributes = matchingOrder.attributes || {};
     const orderId = matchingOrder.id;
@@ -127,7 +178,7 @@ export async function POST(request: Request) {
         analysis_id: analysisId,
         lemon_squeezy_checkout_session_id: pendingPurchase?.lemon_squeezy_checkout_session_id || null,
         lemon_squeezy_order_id: String(orderId),
-        amount_cents: Number(attributes.total || 1900),
+        amount_cents: toCents(attributes.total || 1900),
         currency: String(attributes.currency || "USD").toLowerCase(),
         status: "paid"
       }, { onConflict: "analysis_id" });
@@ -143,6 +194,6 @@ export async function POST(request: Request) {
     return NextResponse.json({ paid: true, source: "lemonsqueezy_api" });
   } catch (error) {
     console.error("ARCHBID LEMON SQUEEZY ORDER VERIFICATION EXCEPTION:", error);
-    return NextResponse.json({ paid: false });
+    return NextResponse.json({ paid: false, reason: "verification_exception" });
   }
 }
