@@ -15,7 +15,7 @@ function normalizeEmail(value: unknown) {
 function toCents(value: unknown) {
   const number = Number(value);
   if (!Number.isFinite(number)) return 0;
-  // Lemon Squeezy documents order totals in the currency's smallest unit.
+  // Lemon Squeezy normally returns order totals in the currency's smallest unit.
   // Keep this tolerant of a decimal amount in case an API response is formatted differently.
   return number < 100 ? Math.round(number * 100) : Math.round(number);
 }
@@ -79,7 +79,7 @@ export async function POST(request: Request) {
   }
 
   const apiKey = process.env.LEMONSQUEEZY_API_KEY;
-  if (!apiKey || !user.email) return NextResponse.json({ paid: false });
+  if (!apiKey) return NextResponse.json({ paid: false });
 
   const testMode = String(process.env.LEMONSQUEEZY_TEST_MODE || "").toLowerCase() === "true";
   const storeId = Number(process.env.LEMONSQUEEZY_STORE_ID || ARCHBID_LEMON_STORE_ID);
@@ -98,10 +98,12 @@ export async function POST(request: Request) {
       Authorization: `Bearer ${apiKey}`
     };
 
-    // Do not rely on Lemon Squeezy's email filter here. We fetch recent orders
-    // for the store and match the email locally. This makes the confirmation
-    // path resilient to URL/filter encoding differences while still requiring
-    // the authenticated ArchBid user's email, paid status and exact variant.
+    // Do not require the Lemon Squeezy billing email to equal the ArchBid
+    // account email. Customers are allowed to pay with a different billing
+    // email. The checkout reference was created by ArchBid for this exact
+    // signed-in user + analysis, so ownership is already verified above.
+    // We then match a paid order by store, exact proposal variant, mode,
+    // amount and creation time after that checkout was created.
     const params = new URLSearchParams();
     params.set("filter[store_id]", String(storeId));
     params.set("page[size]", "100");
@@ -119,25 +121,22 @@ export async function POST(request: Request) {
     }
 
     const pendingCreatedAt = pendingPurchase?.created_at ? Date.parse(pendingPurchase.created_at) : NaN;
-    // Allow a generous window because the user may complete checkout several
-    // minutes after the checkout record is created.
+    // A pending checkout is our correlation key. Give the customer a generous
+    // window because they may spend several minutes on the payment page.
     const minimumCreatedAt = Number.isFinite(pendingCreatedAt)
       ? pendingCreatedAt - 10 * 60 * 1000
       : Date.now() - 60 * 60 * 1000;
 
-    const expectedEmail = normalizeEmail(user.email);
     const orders = Array.isArray(result?.data) ? result.data : [];
 
     const matchingOrder = orders.find((item: any) => {
       const attributes = item?.attributes || {};
       const orderVariantId = Number(attributes?.first_order_item?.variant_id);
       const createdAt = Date.parse(attributes?.created_at || "");
-      const orderEmail = normalizeEmail(attributes?.user_email);
       const amountCents = toCents(attributes?.total);
 
       return (
         String(attributes?.store_id) === String(storeId) &&
-        orderEmail === expectedEmail &&
         attributes?.status === "paid" &&
         attributes?.test_mode === testMode &&
         orderVariantId === variantId &&
@@ -157,7 +156,6 @@ export async function POST(request: Request) {
       }));
       console.warn("ARCHBID LEMON SQUEEZY: no matching paid order found", {
         analysisId,
-        expectedEmail,
         storeId,
         variantId,
         testMode,
