@@ -35,6 +35,14 @@ export async function POST(request: Request) {
   if (existingPaid) return NextResponse.json({ paid: true, source: "database" });
 
   const admin = createAdminClient();
+  const { data: analysis, error: analysisError } = await admin
+    .from("rfp_analyses")
+    .select("id, rfp_id")
+    .eq("id", analysisId)
+    .maybeSingle();
+
+  if (analysisError || !analysis) return NextResponse.json({ paid: false });
+
   const { data: pendingPurchase, error: pendingError } = await admin
     .from("proposal_purchases")
     .select("id, status, created_at, lemon_squeezy_checkout_session_id")
@@ -62,10 +70,9 @@ export async function POST(request: Request) {
   }
 
   try {
-    // Webhooks are the primary source of truth. This API verification is a
-    // recovery path for the short window immediately after checkout, when a
-    // webhook may still be delayed. Lemon Squeezy exposes order filtering by
-    // email/store and includes the purchased variant on the order object.
+    // Webhooks remain the primary fulfillment mechanism. This API check is a
+    // recovery path for the short period after checkout when the webhook is
+    // delayed or has not yet reached the application.
     const params = new URLSearchParams();
     params.set("filter[user_email]", user.email);
     params.set("filter[store_id]", String(storeId));
@@ -87,12 +94,15 @@ export async function POST(request: Request) {
     }
 
     const pendingCreatedAt = pendingPurchase?.created_at ? Date.parse(pendingPurchase.created_at) : NaN;
-    const minimumCreatedAt = Number.isFinite(pendingCreatedAt) ? pendingCreatedAt - 2 * 60 * 1000 : Date.now() - 30 * 60 * 1000;
+    const minimumCreatedAt = Number.isFinite(pendingCreatedAt)
+      ? pendingCreatedAt - 2 * 60 * 1000
+      : Date.now() - 30 * 60 * 1000;
 
     const matchingOrder = (result?.data || []).find((item: any) => {
       const attributes = item?.attributes || {};
       const orderVariantId = Number(attributes?.first_order_item?.variant_id);
       const createdAt = Date.parse(attributes?.created_at || "");
+
       return (
         String(attributes?.store_id) === String(storeId) &&
         String(attributes?.user_email || "").toLowerCase() === String(user.email).toLowerCase() &&
@@ -113,7 +123,7 @@ export async function POST(request: Request) {
       .from("proposal_purchases")
       .upsert({
         user_id: user.id,
-        rfp_id: pendingPurchase ? undefined : undefined,
+        rfp_id: analysis.rfp_id,
         analysis_id: analysisId,
         lemon_squeezy_checkout_session_id: pendingPurchase?.lemon_squeezy_checkout_session_id || null,
         lemon_squeezy_order_id: String(orderId),
@@ -122,32 +132,7 @@ export async function POST(request: Request) {
         status: "paid"
       }, { onConflict: "analysis_id" });
 
-    if (updateError) {
-      // If an existing purchase row was present, upsert above may fail because
-      // rfp_id is required. Fetch it and retry with the complete ownership data.
-      const { data: completePurchase } = await admin
-        .from("rfp_analyses")
-        .select("id, rfp_id")
-        .eq("id", analysisId)
-        .maybeSingle();
-
-      if (!completePurchase) throw updateError;
-
-      const { error: retryError } = await admin
-        .from("proposal_purchases")
-        .upsert({
-          user_id: user.id,
-          rfp_id: completePurchase.rfp_id,
-          analysis_id: analysisId,
-          lemon_squeezy_checkout_session_id: pendingPurchase?.lemon_squeezy_checkout_session_id || null,
-          lemon_squeezy_order_id: String(orderId),
-          amount_cents: Number(attributes.total || 1900),
-          currency: String(attributes.currency || "USD").toLowerCase(),
-          status: "paid"
-        }, { onConflict: "analysis_id" });
-
-      if (retryError) throw retryError;
-    }
+    if (updateError) throw updateError;
 
     console.log("ARCHBID LEMON SQUEEZY: payment confirmed by API fallback", {
       analysisId,
