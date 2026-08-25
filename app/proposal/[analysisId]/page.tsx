@@ -56,6 +56,9 @@ export default function ProposalPage() {
         const checkoutReturned = new URLSearchParams(window.location.search).get("checkout") === "success";
         if (checkoutReturned) setMessage("Payment received. Confirming your proposal access…");
 
+        let isPaid = false;
+
+        // First check our own database. Webhook fulfillment is the primary path.
         const { data: purchase } = await supabase
           .from("proposal_purchases")
           .select("id")
@@ -65,24 +68,32 @@ export default function ProposalPage() {
           .maybeSingle();
 
         if (purchase) {
-          setPaid(true);
+          isPaid = true;
+          if (!cancelled) setPaid(true);
           window.history.replaceState({}, "", `/proposal/${analysisId}`);
-        } else if (checkoutReturned) {
-          for (let attempt = 0; attempt < 10 && !cancelled; attempt++) {
-            await new Promise(resolve => setTimeout(resolve, 1500));
-            const { data: confirmed } = await supabase
-              .from("proposal_purchases")
-              .select("id")
-              .eq("analysis_id", analysisId)
-              .eq("user_id", user.id)
-              .eq("status", "paid")
-              .maybeSingle();
-            if (confirmed) {
+        }
+
+        // If we just returned from checkout, ask the server to verify the order
+        // directly with Lemon Squeezy as a recovery path for delayed webhooks.
+        if (!isPaid && checkoutReturned && !cancelled) {
+          for (let attempt = 0; attempt < 12 && !cancelled; attempt++) {
+            const response = await fetch("/api/proposal/confirm", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ analysisId }),
+              cache: "no-store"
+            });
+            const result = await response.json().catch(() => ({}));
+
+            if (result.paid) {
+              isPaid = true;
               setPaid(true);
-              window.history.replaceState({}, "", `/proposal/${analysisId}`);
               setMessage("Payment confirmed. Your proposal is ready to generate.");
+              window.history.replaceState({}, "", `/proposal/${analysisId}`);
               break;
             }
+
+            if (attempt < 11) await new Promise(resolve => setTimeout(resolve, 1500));
           }
         }
 
@@ -97,20 +108,8 @@ export default function ProposalPage() {
           setProposal({ id: savedProposal.id, ...(savedProposal.content as Proposal) });
         }
 
-        if (!cancelled && checkoutReturned && !paid && !purchase) {
-          const { data: finalCheck } = await supabase
-            .from("proposal_purchases")
-            .select("id")
-            .eq("analysis_id", analysisId)
-            .eq("user_id", user.id)
-            .eq("status", "paid")
-            .maybeSingle();
-          if (finalCheck) {
-            setPaid(true);
-            setMessage("Payment confirmed. Your proposal is ready to generate.");
-          } else {
-            setMessage("Your payment was received, but access is still being confirmed. Please refresh in a few seconds.");
-          }
+        if (!cancelled && checkoutReturned && !isPaid) {
+          setMessage("Payment was received, but ArchBid has not confirmed access yet. Please wait a moment and try again.");
         }
       } catch (error) {
         if (!cancelled) setMessage(error instanceof Error ? error.message : "We could not load the proposal workspace.");
@@ -143,7 +142,6 @@ export default function ProposalPage() {
       if (checkoutTab && !checkoutTab.closed) {
         checkoutTab.location.href = result.url;
       } else {
-        // Fallback if the browser blocked the new tab.
         window.location.href = result.url;
       }
     } catch (error) {
