@@ -41,7 +41,8 @@ CRITICAL RULES:
 - Do not invent a fee unless a fee is explicitly supplied.
 - Do not make promises that are not supported by the RFP or firm profile.
 - Tailor the approach to the project, client, scope, risks, evaluation criteria, and submission requirements.
-- Produce a draft that an architecture firm can edit and submit after inserting missing firm-specific information.
+- Produce a concise draft that an architecture firm can edit and submit after inserting missing firm-specific information.
+- Keep each list focused and avoid unnecessary repetition.
 
 The proposal should read like a real professional architectural services proposal, not an AI report.`;
 
@@ -62,6 +63,20 @@ function extractOutputText(response: any): string {
     }
   }
   return chunks.join("\n").trim();
+}
+
+function compactRawAnalysis(raw: unknown): unknown {
+  if (!raw || typeof raw !== "object") return {};
+
+  // raw_analysis can contain the full extraction behind the report. Sending all of it
+  // makes proposal generation unnecessarily slow. Keep useful intelligence while
+  // preventing very large RFPs from pushing the model request toward the Vercel limit.
+  const json = JSON.stringify(raw);
+  if (json.length <= 24000) return raw;
+  return {
+    note: "Full raw analysis omitted here because the structured RFP fields above are authoritative for proposal drafting.",
+    excerpt: json.slice(0, 24000)
+  };
 }
 
 export async function POST(request: Request) {
@@ -132,16 +147,8 @@ export async function POST(request: Request) {
   const apiKey = process.env.OPENAI_API_KEY;
   if (!apiKey) return NextResponse.json({ error: "OPENAI_API_KEY is missing." }, { status: 503 });
 
-  const raw = analysis.raw_analysis && typeof analysis.raw_analysis === "object" ? analysis.raw_analysis : {};
   const firmProfile = firm || { name: "[FIRM NAME]", country: "United States", services: [], website: "" };
-
-  const input = `${systemPrompt}
-
-FIRM PROFILE:
-${JSON.stringify(firmProfile, null, 2)}
-
-RFP ANALYSIS:
-${JSON.stringify({
+  const rfpIntelligence = {
     fileName: rfp.file_name,
     projectName: analysis.project_name,
     clientName: analysis.client_name,
@@ -156,16 +163,28 @@ ${JSON.stringify({
     risks: analysis.risks,
     strengths: analysis.strengths,
     missingItems: analysis.missing_items,
-    intelligence: raw
-  }, null, 2)}
+    intelligence: compactRawAnalysis(analysis.raw_analysis)
+  };
+
+  const input = `${systemPrompt}
+
+FIRM PROFILE:
+${JSON.stringify(firmProfile, null, 2)}
+
+RFP ANALYSIS:
+${JSON.stringify(rfpIntelligence, null, 2)}
 
 Create the proposal draft now.`;
 
   try {
-    const openai = new OpenAI({ apiKey, timeout: 55000, maxRetries: 0 });
+    // Luna is the cost-sensitive, high-volume GPT-5.6 option and is a better fit for
+    // this one-click proposal product than a heavier reasoning configuration. Keep the
+    // request comfortably inside the Vercel function duration available to the app.
+    const openai = new OpenAI({ apiKey, timeout: 50000, maxRetries: 0 });
     const response = await openai.responses.create({
-      model: "gpt-5.6",
+      model: "gpt-5.6-luna",
       input,
+      reasoning: { effort: "low" },
       text: { format: jsonFormat }
     });
 
