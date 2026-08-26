@@ -1,7 +1,6 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { useSearchParams } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
 import "./firm-profile.css";
 
@@ -29,8 +28,7 @@ const emptyProfile: FirmProfile = {
 
 export default function FirmProfilePage() {
   const supabase = createClient();
-  const searchParams = useSearchParams();
-  const returnTo = searchParams.get("returnTo");
+  const [returnTo, setReturnTo] = useState<string | null>(null);
   const [profile, setProfile] = useState<FirmProfile>(emptyProfile);
   const [firmName, setFirmName] = useState("");
   const [loading, setLoading] = useState(true);
@@ -39,6 +37,8 @@ export default function FirmProfilePage() {
   const [error, setError] = useState("");
 
   useEffect(() => {
+    const requestedReturn = new URLSearchParams(window.location.search).get("returnTo");
+    if (requestedReturn?.startsWith("/")) setReturnTo(requestedReturn);
     async function load() {
       const { data: { user }, error: authError } = await supabase.auth.getUser();
       if (authError || !user) { window.location.href = "/login"; return; }
@@ -67,7 +67,7 @@ export default function FirmProfilePage() {
       if (saveError) throw saveError;
       setFirmName(firmUpdate.name);
       setMessage("Firm Profile saved. ArchBid will use these details automatically in future proposals.");
-      if (returnTo && returnTo.startsWith("/")) setTimeout(() => { window.location.href = returnTo; }, 700);
+      if (returnTo) setTimeout(() => { window.location.href = returnTo; }, 700);
     } catch (err) { setError(err instanceof Error ? err.message : "We could not save your firm profile."); }
     finally { setSaving(false); }
   }
