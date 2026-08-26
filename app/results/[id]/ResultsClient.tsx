@@ -104,6 +104,8 @@ export default function ResultsClient() {
   const id = params?.id;
   const [analysis, setAnalysis] = useState<Analysis | null>(null);
   const [rfp, setRfp] = useState<Rfp | null>(null);
+  const [proposalReady, setProposalReady] = useState(false);
+  const [proposalPaid, setProposalPaid] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
 
@@ -151,9 +153,20 @@ export default function ResultsClient() {
         if (rfpError) throw new Error(`Could not load the RFP: ${rfpError.message}`);
         if (!foundRfp) throw new Error("This saved analysis does not belong to the signed-in account.");
 
+        const [{ data: purchases, error: purchaseError }, { data: proposals, error: proposalError }] = await Promise.all([
+          supabase.from("proposal_purchases").select("analysis_id, status").eq("analysis_id", foundAnalysis.id).eq("status", "paid"),
+          supabase.from("proposals").select("analysis_id, status").eq("analysis_id", foundAnalysis.id),
+        ]);
+        if (purchaseError) console.warn("Proposal purchase lookup failed:", purchaseError.message);
+        if (proposalError) console.warn("Proposal lookup failed:", proposalError.message);
+        const paid = (purchases ?? []).some(item => item.status === "paid");
+        const ready = (proposals ?? []).some(item => item.status === "ready");
+
         if (!cancelled) {
           setAnalysis(foundAnalysis);
           setRfp(foundRfp as Rfp);
+          setProposalPaid(paid);
+          setProposalReady(ready);
         }
       } catch (err) {
         console.error("ARCHBID RESULTS LOAD ERROR:", err);
@@ -243,11 +256,11 @@ export default function ResultsClient() {
         <section className="proposal-cta">
           <div>
             <span className="mini-label">TURN INTELLIGENCE INTO ACTION</span>
-            <h2>Need ArchBid to write the proposal for you?</h2>
-            <p>Get a tailored, client-ready first draft based on this RFP, including the cover letter, project approach, scope, evaluation criteria and compliance items.</p>
+            <h2>{proposalReady ? "Your proposal is ready" : proposalPaid ? "Your proposal is unlocked" : "Need ArchBid to write the proposal for you?"}</h2>
+            <p>{proposalReady ? "Your tailored proposal draft has already been generated. Open it to review and refine it." : proposalPaid ? "Your payment has been confirmed. Open the proposal workspace to generate your tailored draft." : "Get a tailored, client-ready first draft based on this RFP, including the cover letter, project approach, scope, evaluation criteria and compliance items."}</p>
           </div>
           <Link className="proposal-cta-button" href={`/proposal/${analysis.id}`}>
-            Generate my proposal · $19 →
+            {proposalReady ? "View proposal →" : proposalPaid ? "Generate proposal →" : "Generate my proposal · $19 →"}
           </Link>
         </section>
 
