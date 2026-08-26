@@ -8,18 +8,10 @@ export const maxDuration = 60;
 const proposalSchema = {
   type: "object",
   properties: {
-    title: { type: "string" },
-    coverLetter: { type: "string" },
-    executiveSummary: { type: "string" },
-    projectUnderstanding: { type: "string" },
-    approach: { type: "array", items: { type: "string" } },
-    scopeAndDeliverables: { type: "array", items: { type: "string" } },
-    schedule: { type: "array", items: { type: "string" } },
-    teamAndExperience: { type: "array", items: { type: "string" } },
-    compliance: { type: "array", items: { type: "string" } },
-    assumptions: { type: "array", items: { type: "string" } },
-    closing: { type: "string" },
-    placeholders: { type: "array", items: { type: "string" } }
+    title: { type: "string" }, coverLetter: { type: "string" }, executiveSummary: { type: "string" }, projectUnderstanding: { type: "string" },
+    approach: { type: "array", items: { type: "string" } }, scopeAndDeliverables: { type: "array", items: { type: "string" } }, schedule: { type: "array", items: { type: "string" } },
+    teamAndExperience: { type: "array", items: { type: "string" } }, compliance: { type: "array", items: { type: "string" } }, assumptions: { type: "array", items: { type: "string" } },
+    closing: { type: "string" }, placeholders: { type: "array", items: { type: "string" } }
   },
   required: ["title", "coverLetter", "executiveSummary", "projectUnderstanding", "approach", "scopeAndDeliverables", "schedule", "teamAndExperience", "compliance", "assumptions", "closing", "placeholders"],
   additionalProperties: false
@@ -87,17 +79,11 @@ function isFilled(value: unknown) {
 
 function addMissingPlaceholders(proposal: any, firmProfile: Record<string, any>) {
   const missing: Array<[string, string]> = [
-    ["legalName", "Firm legal name"],
-    ["authorizedRepresentative", "Authorized representative"],
-    ["registrationsLicenses", "Relevant registrations and licenses"],
-    ["yearsExperience", "Years of experience"],
-    ["availabilityCapacity", "Availability and capacity"],
-    ["municipalExperience", "Municipal experience"],
-    ["projectExperience", "Relevant project experience"],
-    ["teamMembers", "Team members"],
+    ["legalName", "Firm legal name"], ["authorizedRepresentative", "Authorized representative"], ["registrationsLicenses", "Relevant registrations and licenses"], ["yearsExperience", "Years of experience"],
+    ["availabilityCapacity", "Availability and capacity"], ["municipalExperience", "Municipal experience"], ["projectExperience", "Relevant project experience"], ["teamMembers", "Team members"]
   ];
-  const existing = Array.isArray(proposal.placeholders) ? proposal.placeholders.map((item: unknown) => String(item).trim()).filter(Boolean) : [];
-  const existingLower = new Set(existing.map(item => item.toLowerCase()));
+  const existing: string[] = Array.isArray(proposal.placeholders) ? proposal.placeholders.map((item: unknown) => String(item).trim()).filter(Boolean) : [];
+  const existingLower = new Set<string>(existing.map((item: string) => item.toLowerCase()));
   for (const [key, label] of missing) if (!isFilled(firmProfile[key]) && !existingLower.has(label.toLowerCase())) existing.push(label);
   proposal.placeholders = [...new Set(existing)];
   return proposal;
@@ -107,68 +93,34 @@ export async function POST(request: Request) {
   const supabase = await createSupabaseServerClient();
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) return NextResponse.json({ error: "You must be signed in." }, { status: 401 });
-
   const body = await request.json().catch(() => null);
   const analysisId = body?.analysisId;
   if (!analysisId || typeof analysisId !== "string") return NextResponse.json({ error: "Missing analysis ID." }, { status: 400 });
-
   const { data: analysis, error: analysisError } = await supabase.from("rfp_analyses").select("*").eq("id", analysisId).maybeSingle();
   if (analysisError || !analysis) return NextResponse.json({ error: "Analysis not found." }, { status: 404 });
-
   const { data: rfp, error: rfpError } = await supabase.from("rfps").select("id, user_id, file_name, firm_id").eq("id", analysis.rfp_id).eq("user_id", user.id).maybeSingle();
   if (rfpError || !rfp) return NextResponse.json({ error: "This analysis does not belong to your account." }, { status: 403 });
-
   const { data: purchase } = await supabase.from("proposal_purchases").select("id, status").eq("analysis_id", analysis.id).eq("user_id", user.id).eq("status", "paid").maybeSingle();
   if (!purchase) return NextResponse.json({ error: "A paid proposal purchase is required for this RFP." }, { status: 402 });
-
   const { data: firmBasic } = await supabase.from("firms").select("name, country, services, website, profile").eq("owner_id", user.id).maybeSingle();
-  const firmProfile = {
-    name: firmBasic?.name || "",
-    country: firmBasic?.country || "United States",
-    website: firmBasic?.website || "",
-    services: Array.isArray(firmBasic?.services) ? firmBasic.services : [],
-    ...((firmBasic?.profile && typeof firmBasic.profile === "object") ? firmBasic.profile : {}),
-  } as Record<string, any>;
+  const firmProfile = { name: firmBasic?.name || "", country: firmBasic?.country || "United States", website: firmBasic?.website || "", services: Array.isArray(firmBasic?.services) ? firmBasic.services : [], ...((firmBasic?.profile && typeof firmBasic.profile === "object") ? firmBasic.profile : {}) } as Record<string, any>;
   if (!firmProfile.legalName && firmProfile.name) firmProfile.legalName = firmProfile.name;
-
   const { data: existingProposal } = await supabase.from("proposals").select("id, status, content").eq("analysis_id", analysis.id).eq("user_id", user.id).maybeSingle();
   if (existingProposal?.status === "ready" && existingProposal.content) return NextResponse.json({ status: "ready", proposalId: existingProposal.id, proposal: existingProposal.content });
-
   const proposalRow = { user_id: user.id, rfp_id: rfp.id, analysis_id: analysis.id, status: "generating", content: {} };
   const { data: savedProposal, error: proposalSaveError } = await supabase.from("proposals").upsert(proposalRow, { onConflict: "analysis_id" }).select("id").single();
   if (proposalSaveError || !savedProposal) return NextResponse.json({ error: "We could not start proposal generation." }, { status: 500 });
-
   const apiKey = process.env.OPENAI_API_KEY;
   if (!apiKey) return NextResponse.json({ error: "OPENAI_API_KEY is missing." }, { status: 503 });
-
-  const rfpIntelligence = {
-    fileName: rfp.file_name,
-    projectName: analysis.project_name,
-    clientName: analysis.client_name,
-    location: analysis.location,
-    projectType: analysis.project_type,
-    deadline: analysis.deadline,
-    opportunityScore: analysis.opportunity_score,
-    recommendation: analysis.recommendation,
-    requirements: analysis.requirements,
-    evaluationCriteria: analysis.evaluation_criteria,
-    submissionRequirements: analysis.submission_requirements,
-    risks: analysis.risks,
-    strengths: analysis.strengths,
-    missingItems: analysis.missing_items,
-    intelligence: compactRawAnalysis(analysis.raw_analysis)
-  };
-
+  const rfpIntelligence = { fileName: rfp.file_name, projectName: analysis.project_name, clientName: analysis.client_name, location: analysis.location, projectType: analysis.project_type, deadline: analysis.deadline, opportunityScore: analysis.opportunity_score, recommendation: analysis.recommendation, requirements: analysis.requirements, evaluationCriteria: analysis.evaluation_criteria, submissionRequirements: analysis.submission_requirements, risks: analysis.risks, strengths: analysis.strengths, missingItems: analysis.missing_items, intelligence: compactRawAnalysis(analysis.raw_analysis) };
   const missingFirmFields = ["legalName", "authorizedRepresentative", "registrationsLicenses", "yearsExperience", "availabilityCapacity", "municipalExperience", "projectExperience", "teamMembers"].filter(key => !isFilled(firmProfile[key]));
   const input = `${systemPrompt}\n\nFIRM PROFILE (verified information supplied by the user):\n${JSON.stringify(firmProfile, null, 2)}\n\nMISSING FIRM PROFILE FIELDS:\n${JSON.stringify(missingFirmFields)}\n\nRFP ANALYSIS:\n${JSON.stringify(rfpIntelligence, null, 2)}\n\nCreate the proposal draft now.`;
-
   try {
     const openai = new OpenAI({ apiKey, timeout: 50000, maxRetries: 0 });
     const response = await openai.responses.create({ model: "gpt-5.6-luna", input, reasoning: { effort: "low" }, text: { format: jsonFormat } });
     const outputText = extractOutputText(response);
     if (!outputText) throw new Error("The AI returned an empty proposal.");
     const proposal = addMissingPlaceholders(JSON.parse(outputText), firmProfile);
-
     const { error: updateError } = await supabase.from("proposals").update({ status: "ready", content: proposal, updated_at: new Date().toISOString() }).eq("id", savedProposal.id).eq("user_id", user.id);
     if (updateError) throw updateError;
     return NextResponse.json({ status: "ready", proposalId: savedProposal.id, proposal });
