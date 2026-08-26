@@ -105,6 +105,7 @@ export async function POST(request: Request) {
 
   const body = await request.json().catch(() => null);
   const analysisId = body?.analysisId;
+  const regenerate = body?.regenerate === true;
   if (!analysisId || typeof analysisId !== "string") return NextResponse.json({ error: "Missing analysis ID." }, { status: 400 });
 
   const { data: analysis, error: analysisError } = await supabase
@@ -144,7 +145,7 @@ export async function POST(request: Request) {
     .eq("user_id", user.id)
     .maybeSingle();
 
-  if (existingProposal?.status === "ready" && existingProposal.content) {
+  if (!regenerate && existingProposal?.status === "ready" && existingProposal.content) {
     return NextResponse.json({ status: "ready", proposalId: existingProposal.id, proposal: existingProposal.content });
   }
 
@@ -153,7 +154,7 @@ export async function POST(request: Request) {
     rfp_id: rfp.id,
     analysis_id: analysis.id,
     status: "generating",
-    content: {}
+    content: regenerate && existingProposal?.content ? existingProposal.content : {}
   };
 
   const { data: savedProposal, error: proposalSaveError } = await supabase
