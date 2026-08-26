@@ -47,6 +47,25 @@ function BulletSection({ title, items }: { title: string; items: string[] }) {
   return <section className="proposal-section"><h2>{title}</h2><ul>{items.map((item, i) => <li key={i}>{item}</li>)}</ul></section>;
 }
 
+function hasUsefulFirmProfile(profile: unknown) {
+  if (!profile || typeof profile !== "object") return false;
+  const p = profile as Record<string, unknown>;
+  const important = [
+    "legalName",
+    "authorizedRepresentative",
+    "registrationsLicenses",
+    "yearsExperience",
+    "availabilityCapacity",
+    "municipalExperience",
+    "services",
+    "projectExperience",
+    "teamMembers",
+    "certifications",
+    "differentiators",
+  ];
+  return important.filter(key => typeof p[key] === "string" && p[key].trim().length > 0).length >= 3;
+}
+
 export default function ProposalPage() {
   const params = useParams<{ analysisId: string }>();
   const analysisId = params?.analysisId;
@@ -57,6 +76,7 @@ export default function ProposalPage() {
   const [editing, setEditing] = useState(false);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
+  const [profileComplete, setProfileComplete] = useState(false);
 
   useEffect(() => {
     if (!analysisId) return;
@@ -69,6 +89,9 @@ export default function ProposalPage() {
         if (!user) { window.location.href = "/login"; return; }
         const checkoutReturned = new URLSearchParams(window.location.search).get("checkout") === "success";
         if (checkoutReturned) setMessage("Payment received. Confirming your proposal access…");
+
+        const { data: firm } = await supabase.from("firms").select("profile, name, services, website").eq("owner_id", user.id).maybeSingle();
+        if (!cancelled) setProfileComplete(hasUsefulFirmProfile(firm?.profile) || Boolean(firm?.name && firm.name !== "My Architecture Firm" && ((firm.services?.length ?? 0) > 0)));
 
         let isPaid = false;
         const { data: purchase } = await supabase.from("proposal_purchases").select("id").eq("analysis_id", analysisId).eq("user_id", user.id).eq("status", "paid").maybeSingle();
@@ -169,7 +192,10 @@ export default function ProposalPage() {
       <section className="proposal-container">
         {!proposal && !paid && <section className="upgrade-card"><span className="mini-label">PAID PROPOSAL ADD-ON</span><h1>Turn this RFP analysis into a client-ready proposal draft.</h1><p>ArchBid will use the RFP intelligence, evaluation criteria, requirements and your reusable Firm Profile to create a tailored first draft. It will never invent credentials or project experience.</p><div className="upgrade-grid"><div><strong>$19</strong><span>one-time per proposal</span></div><ul><li>Project-specific cover letter</li><li>Tailored approach and scope</li><li>Evaluation-criteria alignment</li><li>Compliance and submission checklist</li><li>Firm-specific missing information clearly flagged</li></ul></div><button className="primary-button" onClick={buyProposal} disabled={busy}>{busy ? "Opening secure checkout…" : "Get my proposal draft — $19 →"}</button><small>Secure payment is handled by Lemon Squeezy. Your RFP report remains available even if you decide not to purchase.</small></section>}
 
-        {paid && !proposal && <section className="generate-card"><span className="mini-label">PROPOSAL UNLOCKED</span><h1>Your proposal workspace is ready.</h1><p>Generate a tailored first draft from this RFP. ArchBid will automatically use the information saved in your Firm Profile and clearly mark genuinely missing details.</p><button className="primary-button" onClick={generateProposal} disabled={busy}>{busy ? "Writing proposal…" : "Generate proposal →"}</button></section>}
+        {paid && !proposal && <section className="generate-card"><span className="mini-label">PROPOSAL UNLOCKED</span><h1>Your proposal workspace is ready.</h1><p>Generate a tailored first draft from this RFP. ArchBid will automatically use the information saved in your Firm Profile and clearly mark genuinely missing details.</p>
+          {!profileComplete && <div className="placeholder-box" style={{ margin: "24px 0", textAlign: "left" }}><strong>Complete your Firm Profile for a stronger proposal</strong><p>Add your firm's experience, services, registrations, past projects and other details. ArchBid will reuse this information in future proposals.</p><div style={{ display: "flex", gap: "10px", flexWrap: "wrap", marginTop: "14px" }}><Link className="print-button primary-action" href="/firm-profile">Complete Firm Profile →</Link><button className="print-button" onClick={generateProposal} disabled={busy}>Generate anyway</button></div></div>}
+          <button className="primary-button" onClick={generateProposal} disabled={busy}>{busy ? "Writing proposal…" : "Generate proposal →"}</button>
+        </section>}
 
         {message && <div className="proposal-message">{message}</div>}
 
