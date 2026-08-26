@@ -57,8 +57,6 @@ export default function ProposalPage() {
         if (checkoutReturned) setMessage("Payment received. Confirming your proposal access…");
 
         let isPaid = false;
-
-        // First check our own database. Webhook fulfillment is the primary path.
         const { data: purchase } = await supabase
           .from("proposal_purchases")
           .select("id")
@@ -73,8 +71,6 @@ export default function ProposalPage() {
           window.history.replaceState({}, "", `/proposal/${analysisId}`);
         }
 
-        // If we just returned from checkout, ask the server to verify the order
-        // directly with Lemon Squeezy as a recovery path for delayed webhooks.
         if (!isPaid && checkoutReturned && !cancelled) {
           for (let attempt = 0; attempt < 12 && !cancelled; attempt++) {
             const response = await fetch("/api/proposal/confirm", {
@@ -125,9 +121,6 @@ export default function ProposalPage() {
   async function buyProposal() {
     setBusy(true);
     setMessage("");
-
-    // Open the new tab immediately from the user's click so browser popup
-    // blockers are less likely to prevent the Lemon Squeezy checkout.
     const checkoutTab = window.open("about:blank", "_blank");
 
     try {
@@ -139,11 +132,8 @@ export default function ProposalPage() {
       const result = await response.json().catch(() => ({}));
       if (!response.ok || !result.url) throw new Error(result.error || "Checkout could not be started.");
 
-      if (checkoutTab && !checkoutTab.closed) {
-        checkoutTab.location.href = result.url;
-      } else {
-        window.location.href = result.url;
-      }
+      if (checkoutTab && !checkoutTab.closed) checkoutTab.location.href = result.url;
+      else window.location.href = result.url;
     } catch (error) {
       if (checkoutTab && !checkoutTab.closed) checkoutTab.close();
       setMessage(error instanceof Error ? error.message : "Checkout could not be started.");
@@ -151,19 +141,19 @@ export default function ProposalPage() {
     }
   }
 
-  async function generateProposal() {
+  async function generateProposal(regenerate = false) {
     setBusy(true);
-    setMessage("ArchBid is writing your proposal…");
+    setMessage(regenerate ? "ArchBid is regenerating a tighter proposal draft…" : "ArchBid is writing your proposal…");
     try {
       const response = await fetch("/api/proposal/generate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ analysisId })
+        body: JSON.stringify({ analysisId, regenerate })
       });
       const result = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(result.error || "Proposal generation failed.");
       setProposal(result.proposal);
-      setMessage("Proposal draft generated. Review the highlighted placeholders before submitting.");
+      setMessage(regenerate ? "Proposal regenerated with the improved concise format." : "Proposal draft generated. Review the highlighted placeholders before submitting.");
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "Proposal generation failed.");
     } finally {
@@ -202,7 +192,7 @@ export default function ProposalPage() {
             <span className="mini-label">PROPOSAL UNLOCKED</span>
             <h1>Your proposal workspace is ready.</h1>
             <p>Generate a tailored first draft from this RFP. The draft will clearly mark information your firm still needs to supply.</p>
-            <button className="primary-button" onClick={generateProposal} disabled={busy}>{busy ? "Writing proposal…" : "Generate proposal →"}</button>
+            <button className="primary-button" onClick={() => generateProposal(false)} disabled={busy}>{busy ? "Writing proposal…" : "Generate proposal →"}</button>
           </section>
         )}
 
@@ -210,7 +200,10 @@ export default function ProposalPage() {
 
         {proposal && (
           <article className="proposal-document">
-            <div className="proposal-document-head"><div><span className="mini-label">ARCHBID AI · PROPOSAL DRAFT</span><h1>{proposal.title}</h1><p>AI-assisted draft — review and complete all highlighted placeholders before submission.</p></div><button className="print-button" onClick={() => window.print()}>Print / Save PDF</button></div>
+            <div className="proposal-document-head">
+              <div><span className="mini-label">ARCHBID AI · PROPOSAL DRAFT</span><h1>{proposal.title}</h1><p>AI-assisted draft — review and complete all highlighted placeholders before submission.</p></div>
+              <div className="proposal-actions"><button className="secondary-button print-button" onClick={() => generateProposal(true)} disabled={busy}>{busy ? "Regenerating…" : "Regenerate draft"}</button><button className="print-button" onClick={() => window.print()}>Print / Save PDF</button></div>
+            </div>
             {proposal.placeholders?.length > 0 && <section className="placeholder-box"><strong>Before submitting</strong><ul>{proposal.placeholders.map((item, i) => <li key={i}>{item}</li>)}</ul></section>}
             <section className="proposal-section"><h2>Cover Letter</h2><Paragraphs text={proposal.coverLetter} /></section>
             <section className="proposal-section"><h2>Executive Summary</h2><Paragraphs text={proposal.executiveSummary} /></section>
