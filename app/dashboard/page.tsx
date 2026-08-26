@@ -222,6 +222,24 @@ export default function Dashboard() {
     finally { setBusy(false); }
   }
 
+  async function deleteRfp(item: RfpRecord) {
+    if (busy) return;
+    const confirmed = window.confirm(`Delete "${item.file_name}"? This will permanently remove the uploaded RFP, its analysis and any generated proposal. This cannot be undone.`);
+    if (!confirmed) return;
+    setBusy(true);
+    setStatus("Deleting RFP and its associated data…");
+    try {
+      const response = await fetch("/api/rfp/delete", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ rfpId: item.id }) });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(result.error || "We could not delete this RFP.");
+      setRecentRfPs(current => current.filter(existing => existing.id !== item.id));
+      setRfp(current => current?.id === item.id ? null : current);
+      setStatus("The RFP and its associated ArchBid data have been deleted.");
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : "We could not delete this RFP.");
+    } finally { setBusy(false); }
+  }
+
   async function signOut() { await supabase.auth.signOut(); window.location.href = "/"; }
   function openSavedAnalysis(item: RfpRecord) { if (!item.analysis_id) { setStatus("This RFP is still being analyzed. The View report button will appear automatically when the analysis is complete."); return; } window.location.href = `/results/${item.analysis_id}`; }
   function openProposal(item: RfpRecord) { if (!item.analysis_id) { setStatus("The proposal option becomes available when this RFP analysis is complete."); return; } window.location.href = `/proposal/${item.analysis_id}`; }
@@ -239,6 +257,7 @@ export default function Dashboard() {
           <div className="account-avatar">{firmName.slice(0, 2).toUpperCase()}</div>
           <div className="account-info"><strong>{firmName}</strong><span>{email}</span></div>
           <a className="signout-button" href="/firm-profile">Firm Profile</a>
+          <a className="signout-button" href="/settings">Settings</a>
           <button className="signout-button" onClick={signOut}>Sign out</button>
         </div>
       </nav>
@@ -265,6 +284,7 @@ export default function Dashboard() {
                     <button type="button" className="view-report-button" onClick={() => openSavedAnalysis(item)}>Completed · View report →</button>
                     {item.proposal_state === "ready" ? <button type="button" className="proposal-button" onClick={() => openProposal(item)}>View Proposal →</button> : item.proposal_state === "paid" ? <button type="button" className="proposal-button" onClick={() => openProposal(item)}>Generate Proposal →</button> : <button type="button" className="proposal-button" onClick={() => openProposal(item)}>Generate proposal · $19 →</button>}
                   </> : item.status === "analyzing" ? <span className="status-analyzing">Analyzing…</span> : item.status === "failed" ? <button type="button" className="retry-button" onClick={() => retryAnalysis(item)}>Analysis failed · Retry →</button> : <span>{item.status || "Saved"}</span>}
+                  <button type="button" className="delete-rfp-button" onClick={() => deleteRfp(item)} disabled={busy} aria-label={`Delete ${item.file_name}`}>Delete</button>
                 </span>
               </div>
             ))}
