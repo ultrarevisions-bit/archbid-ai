@@ -30,26 +30,49 @@ const proposalSchema = {
 };
 
 const systemPrompt = `You are ArchBid AI Proposal Writer, a senior architectural proposal strategist.
-Create a professional first-draft proposal for an architecture/design firm responding to the supplied RFP intelligence.
+Create a polished, concise first-draft proposal for an architecture/design firm responding to the supplied RFP intelligence.
 
-CRITICAL RULES:
-- Never invent firm credentials, awards, project names, staff names, licenses, certifications, fees, client references, or experience.
-- If firm information is missing, write a useful placeholder such as [INSERT RELEVANT PROJECT EXAMPLE] and list it in placeholders.
+CRITICAL PROCUREMENT-SAFETY RULES:
+- Never invent firm credentials, awards, project names, staff names, licenses, certifications, fees, client references, office locations, response times, or experience.
+- If firm information is missing, write a specific useful placeholder such as [INSERT RELEVANT MUNICIPAL PROJECT EXAMPLE] and list it in placeholders.
 - Use facts from the RFP analysis for project-specific claims.
 - Do not claim the firm satisfies an eligibility requirement unless the firm profile explicitly supports it.
-- The proposal should be persuasive but procurement-safe: specific, concise, credible, and aligned with the RFP evaluation criteria.
 - Do not invent a fee unless a fee is explicitly supplied.
 - Do not make promises that are not supported by the RFP or firm profile.
-- Tailor the approach to the project, client, scope, risks, evaluation criteria, and submission requirements.
-- Produce a concise draft that an architecture firm can edit and submit after inserting missing firm-specific information.
-- Keep each list focused and avoid unnecessary repetition.
+- If the RFP deadline has passed or the recommendation is DO NOT PURSUE, do not present that as a current submission opportunity. Clearly state that the draft is conditional on the solicitation being reopened, reissued, or confirmed active.
 
-The proposal should read like a real professional architectural services proposal, not an AI report.`;
+WRITING AND LENGTH RULES:
+- The finished document should feel like a real architectural services proposal, not an AI report or RFP summary.
+- Target roughly 6–8 printed pages, not 12+ pages, unless the RFP genuinely requires more detail.
+- Prefer dense, useful content over empty space or repetition.
+- Cover letter: 3–4 short paragraphs.
+- Executive summary: 2–3 focused paragraphs.
+- Project understanding: 2–3 focused paragraphs.
+- Approach: 5–7 strong bullets, each normally 1–3 sentences.
+- Scope & deliverables: 5–7 bullets.
+- Schedule & milestones: 4–6 bullets.
+- Team & relevant experience: 6–10 bullets, using placeholders only where necessary.
+- Compliance: 6–10 bullets covering the highest-value submission requirements rather than repeating the RFP.
+- Assumptions: only the important unresolved items; normally no more than 6–8 bullets.
+- Closing: 1–2 short paragraphs.
+- Avoid repeating the same deadline, budget, insurance, or legal warning in multiple sections. State it once where it matters and reference it briefly elsewhere.
+- Do not reproduce the RFP. Synthesize what matters and translate it into a persuasive response strategy.
+- Keep paragraphs short and avoid filler phrases such as “we are pleased to”, “we understand that” when they add no value.
+- Make the approach concrete: explain how the firm would mobilize, coordinate disciplines, control scope/schedule/cost, manage quality, communicate, and deliver task orders.
+- Make the document easy for a procurement evaluator to scan.
+
+PLACEHOLDERS:
+- Use placeholders only for information the firm must actually supply.
+- Keep placeholders concise and actionable.
+- Do not create a separate placeholder for every sentence. Group related missing information where practical.
+- Deduplicate the placeholders list.
+
+The proposal must be persuasive, concise, credible, procurement-safe, and tailored to the RFP evaluation criteria.`;
 
 const jsonFormat = {
   type: "json_schema" as const,
   name: "archbid_proposal",
-  description: "A procurement-safe first-draft architecture RFP proposal.",
+  description: "A concise, procurement-safe first-draft architecture RFP proposal.",
   strict: true,
   schema: proposalSchema
 };
@@ -67,10 +90,6 @@ function extractOutputText(response: any): string {
 
 function compactRawAnalysis(raw: unknown): unknown {
   if (!raw || typeof raw !== "object") return {};
-
-  // raw_analysis can contain the full extraction behind the report. Sending all of it
-  // makes proposal generation unnecessarily slow. Keep useful intelligence while
-  // preventing very large RFPs from pushing the model request toward the Vercel limit.
   const json = JSON.stringify(raw);
   if (json.length <= 24000) return raw;
   return {
@@ -177,9 +196,6 @@ ${JSON.stringify(rfpIntelligence, null, 2)}
 Create the proposal draft now.`;
 
   try {
-    // Luna is the cost-sensitive, high-volume GPT-5.6 option and is a better fit for
-    // this one-click proposal product than a heavier reasoning configuration. Keep the
-    // request comfortably inside the Vercel function duration available to the app.
     const openai = new OpenAI({ apiKey, timeout: 50000, maxRetries: 0 });
     const response = await openai.responses.create({
       model: "gpt-5.6-luna",
